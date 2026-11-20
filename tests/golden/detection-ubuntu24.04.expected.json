@@ -1418,7 +1418,7 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.3194,
+   "contribution": 0.6931,
    "entities": [
     "account:ccadmin"
    ],
@@ -1435,70 +1435,6 @@
    "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "created: ccadmin UID 1002",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "medium",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
-    "account:proofuser"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 166
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:54.065430+00:00",
-   "last_seen": "2026-10-29T15:48:54.065430+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 4.0,
-   "summary": "created: proofuser UID 1001",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host ubuntu24.04",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof creates proofuser to give the persistence modules something to find.",
-    "rule": "proof-proofuser-account"
-   },
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "medium",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
-    "account:scanner"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 163
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:47.415601+00:00",
-   "last_seen": "2026-10-29T15:48:47.415601+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 4.0,
-   "summary": "created: scanner UID 1000",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host ubuntu24.04",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
-    "rule": "proof-scanner-account"
-   },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
@@ -2653,170 +2589,6 @@
   {
    "band": "low",
    "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
-    "account:dnsmasq"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 153
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:38.236615+00:00",
-   "last_seen": "2026-10-29T15:48:38.236615+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: dnsmasq UID 999",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host ubuntu24.04",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
-    "rule": "proof-docker-dnsmasq-account"
-   },
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
-    "group:docker"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 158
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:40.005823+00:00",
-   "last_seen": "2026-10-29T15:48:40.005823+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group docker",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host ubuntu24.04",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof installs Docker on Ubuntu, which creates the docker group.",
-    "rule": "proof-docker-group"
-   },
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0934,
-   "entities": [
-    "group:postdrop"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 170
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:58.565010+00:00",
-   "last_seen": "2026-10-29T15:48:58.565010+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group postdrop",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0934,
-   "entities": [
-    "group:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 168
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:58.364098+00:00",
-   "last_seen": "2026-10-29T15:48:58.364098+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group postfix",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0934,
-   "entities": [
-    "group:ssl-cert"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 167
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:56.083224+00:00",
-   "last_seen": "2026-10-29T15:48:56.083224+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group ssl-cert",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0934,
-   "entities": [
-    "account:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 169
-    }
-   ],
-   "first_seen": "2026-10-29T15:48:58.435284+00:00",
-   "last_seen": "2026-10-29T15:48:58.435284+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: postfix UID 110",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
    "check": "container.new",
    "contribution": 0.4055,
    "entities": [
@@ -2971,202 +2743,6 @@
    "title": "A new outgoing destination",
    "uncertain": null,
    "variant": "new_destination"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "package.changed",
-   "contribution": 0.4055,
-   "entities": [],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.postinst",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.preinst",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.prerm",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.triggers",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.symbols",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.triggers",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.symbols",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.triggers",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libssh2-1t64:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libssh2-1t64:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libssh2-1t64:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info",
-      "changed"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/status",
-      "changed"
-     ]
-    }
-   ],
-   "first_seen": null,
-   "last_seen": null,
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "30 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
-   "title": "The package managers' checksum lists changed since the baseline",
-   "uncertain": null,
-   "variant": null
   },
   {
    "band": "low",
@@ -3366,6 +2942,234 @@
   {
    "band": "info",
    "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:dnsmasq"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 153
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:38.236615+00:00",
+   "last_seen": "2026-10-29T15:48:38.236615+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: dnsmasq UID 999 (before the baseline)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu (docker.io brings dnsmasq-base and its account).",
+    "rule": "proof-docker-dnsmasq-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:docker"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 158
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:40.005823+00:00",
+   "last_seen": "2026-10-29T15:48:40.005823+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group docker (before the baseline)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof installs Docker on Ubuntu, which creates the docker group.",
+    "rule": "proof-docker-group"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:postdrop"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 170
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:58.565010+00:00",
+   "last_seen": "2026-10-29T15:48:58.565010+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group postdrop (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 168
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:58.364098+00:00",
+   "last_seen": "2026-10-29T15:48:58.364098+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group postfix (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:ssl-cert"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 167
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:56.083224+00:00",
+   "last_seen": "2026-10-29T15:48:56.083224+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group ssl-cert (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 169
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:58.435284+00:00",
+   "last_seen": "2026-10-29T15:48:58.435284+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: postfix UID 110 (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:proofuser"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 166
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:54.065430+00:00",
+   "last_seen": "2026-10-29T15:48:54.065430+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: proofuser UID 1001 (before the baseline)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find.",
+    "rule": "proof-proofuser-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:scanner"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 163
+    }
+   ],
+   "first_seen": "2026-10-29T15:48:47.415601+00:00",
+   "last_seen": "2026-10-29T15:48:47.415601+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: scanner UID 1000 (before the baseline)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host ubuntu24.04",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
+    "rule": "proof-scanner-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
    "check": "files.unowned",
    "contribution": 0.0,
    "entities": [
@@ -3388,6 +3192,186 @@
    "ratio": 1.0,
    "summary": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache (SHA-256 c22c46421f20ce55\u2026)",
    "title": "An executable no package installed (made by a package after install)",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.postinst",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.preinst",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.prerm",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.symbols",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.symbols",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.shlibs",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "30 list file(s), each for a package installed, updated or removed since the baseline, or dpkg's own directory and status file",
+   "title": "The package managers' checksum lists changed since the baseline",
    "uncertain": null,
    "variant": null
   },
@@ -3654,7 +3638,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.0519,
+    "share": 0.0521,
     "title": "An account other than root has UID 0"
    },
    {
@@ -3663,7 +3647,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.0519,
+    "share": 0.0521,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -3672,7 +3656,7 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
@@ -3681,7 +3665,7 @@
     "contribution": 2.9957,
     "finding": 3,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A container that holds the host since the baseline"
    },
    {
@@ -3690,7 +3674,7 @@
     "contribution": 2.9957,
     "finding": 4,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A new privileged file since the baseline"
    },
    {
@@ -3699,7 +3683,7 @@
     "contribution": 2.9957,
     "finding": 6,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A new script in a web root"
    },
    {
@@ -3708,7 +3692,7 @@
     "contribution": 2.9957,
     "finding": 7,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A shell history file is a link to /dev/null"
    },
    {
@@ -3717,7 +3701,7 @@
     "contribution": 2.9957,
     "finding": 8,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A log was truncated since the previous collection"
    },
    {
@@ -3726,7 +3710,7 @@
     "contribution": 2.9957,
     "finding": 9,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A logging service that ran at the baseline isn't running"
    },
    {
@@ -3735,7 +3719,7 @@
     "contribution": 2.9957,
     "finding": 12,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "AppArmor profiles were unloaded or stopped enforcing"
    },
    {
@@ -3744,7 +3728,7 @@
     "contribution": 2.9957,
     "finding": 13,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A web-server account reached SMB"
    },
    {
@@ -3753,7 +3737,7 @@
     "contribution": 2.9957,
     "finding": 14,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
@@ -3762,7 +3746,7 @@
     "contribution": 2.9957,
     "finding": 16,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A process whose program was deleted"
    },
    {
@@ -3771,7 +3755,7 @@
     "contribution": 2.9957,
     "finding": 18,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
@@ -3780,7 +3764,7 @@
     "contribution": 2.9957,
     "finding": 19,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A new authorized SSH key"
    },
    {
@@ -3789,7 +3773,7 @@
     "contribution": 2.9957,
     "finding": 22,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "An sshd setting was added"
    },
    {
@@ -3798,7 +3782,7 @@
     "contribution": 2.9957,
     "finding": 23,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A new sudo rule without a password (NOPASSWD)"
    },
    {
@@ -3807,7 +3791,7 @@
     "contribution": 2.9957,
     "finding": 25,
     "ratio": 20.0,
-    "share": 0.0338,
+    "share": 0.0339,
     "title": "A web account started a shell running an attacker's command"
    },
    {
@@ -3829,7 +3813,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0181,
+    "share": 0.0182,
     "title": "A new account or key, given privilege, then used to log in"
    },
    {
@@ -3849,7 +3833,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0181,
+    "share": 0.0182,
     "title": "A script new since the baseline answered requests, then the web account started a shell or tool"
    },
    {
@@ -3858,106 +3842,106 @@
     "contribution": 1.3863,
     "finding": 30,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": null,
     "check": "mail.domains",
     "contribution": 1.3863,
-    "finding": 34,
+    "finding": 32,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "Mail to many recipient domains never written to before"
    },
    {
     "capped": null,
     "check": "mail.volume",
     "contribution": 1.3863,
-    "finding": 35,
+    "finding": 33,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "A sudden jump in outgoing mail"
    },
    {
     "capped": null,
     "check": "mail.web_user",
     "contribution": 1.3863,
-    "finding": 36,
+    "finding": 34,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "Mail submitted by a web-server account"
    },
    {
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 37,
+    "finding": 35,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "A network configuration file was changed"
    },
    {
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 39,
+    "finding": 37,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "A program other than the cloud agent reached the metadata address"
    },
    {
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 40,
+    "finding": 38,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "An SSH client forwarding ports (a tunnel)"
    },
    {
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 43,
+    "finding": 41,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "A new cron file"
    },
    {
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 49,
+    "finding": 47,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "A package signing key was added"
    },
    {
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 51,
+    "finding": 49,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "An attack or tunnelling tool was installed"
    },
    {
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 52,
+    "finding": 50,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "Logins from an address never seen before"
    },
    {
     "capped": null,
     "check": "web.exploit",
     "contribution": 1.3863,
-    "finding": 55,
+    "finding": 53,
     "ratio": 4.0,
-    "share": 0.0156,
+    "share": 0.0157,
     "title": "A traversal attack answered"
    },
    {
@@ -3998,9 +3982,18 @@
    },
    {
     "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.6931,
+    "finding": 31,
+    "ratio": 4.0,
+    "share": 0.0078,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
     "check": "net.config",
     "contribution": 0.6931,
-    "finding": 38,
+    "finding": 36,
     "ratio": 4.0,
     "share": 0.0078,
     "title": "Firewall rules added since the baseline"
@@ -4009,7 +4002,7 @@
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 41,
+    "finding": 39,
     "ratio": 4.0,
     "share": 0.0078,
     "title": "An SSH session listening on a port (a remote forward)"
@@ -4018,7 +4011,7 @@
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 50,
+    "finding": 48,
     "ratio": 4.0,
     "share": 0.0078,
     "title": "A package repository was added"
@@ -4027,7 +4020,7 @@
     "capped": null,
     "check": "container.new",
     "contribution": 0.4055,
-    "finding": 62,
+    "finding": 54,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "A container new since the baseline"
@@ -4036,7 +4029,7 @@
     "capped": null,
     "check": "net.listener",
     "contribution": 0.4055,
-    "finding": 63,
+    "finding": 55,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "A new listening port"
@@ -4045,25 +4038,16 @@
     "capped": null,
     "check": "net.peer",
     "contribution": 0.4055,
-    "finding": 66,
+    "finding": 58,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "A new outgoing destination"
    },
    {
     "capped": null,
-    "check": "package.changed",
-    "contribution": 0.4055,
-    "finding": 67,
-    "ratio": 1.5,
-    "share": 0.0046,
-    "title": "The package managers' checksum lists changed since the baseline"
-   },
-   {
-    "capped": null,
     "check": "software.packages",
     "contribution": 0.4055,
-    "finding": 68,
+    "finding": 59,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "Packages installed since the baseline"
@@ -4144,7 +4128,7 @@
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 64,
+    "finding": 56,
     "ratio": 1.5,
     "share": 0.0039,
     "title": "A new listening port"
@@ -4153,19 +4137,28 @@
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.3466,
-    "finding": 65,
+    "finding": 57,
     "ratio": 1.5,
     "share": 0.0039,
     "title": "A new listening port"
    },
    {
     "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.3194,
-    "finding": 31,
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 42,
     "ratio": 4.0,
-    "share": 0.0036,
-    "title": "An account or group was changed (from the logs)"
+    "share": 0.0016,
+    "title": "A new systemd file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 43,
+    "ratio": 4.0,
+    "share": 0.0016,
+    "title": "A new systemd file"
    },
    {
     "capped": "family",
@@ -4174,7 +4167,7 @@
     "finding": 44,
     "ratio": 4.0,
     "share": 0.0016,
-    "title": "A new systemd file"
+    "title": "A new startup file"
    },
    {
     "capped": "family",
@@ -4183,7 +4176,7 @@
     "finding": 45,
     "ratio": 4.0,
     "share": 0.0016,
-    "title": "A new systemd file"
+    "title": "A new startup file"
    },
    {
     "capped": "family",
@@ -4193,60 +4186,6 @@
     "ratio": 4.0,
     "share": 0.0016,
     "title": "A new startup file"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
-    "finding": 47,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new startup file"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
-    "finding": 48,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new startup file"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0934,
-    "finding": 58,
-    "ratio": 1.5,
-    "share": 0.0011,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0934,
-    "finding": 59,
-    "ratio": 1.5,
-    "share": 0.0011,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0934,
-    "finding": 60,
-    "ratio": 1.5,
-    "share": 0.0011,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0934,
-    "finding": 61,
-    "ratio": 1.5,
-    "share": 0.0011,
-    "title": "An account or group was changed (from the logs)"
    }
   ],
   "hygiene_and_exposure": {
@@ -4258,7 +4197,7 @@
     }
    }
   },
-  "log_odds": 84.836,
+  "log_odds": 84.4306,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,

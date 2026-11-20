@@ -1370,7 +1370,7 @@
    "band": "medium",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.1766,
+   "contribution": 0.5363,
    "entities": [
     "account:ccadmin"
    ],
@@ -1387,70 +1387,6 @@
    "raised_by_pack": null,
    "ratio": 4.0,
    "summary": "created: ccadmin UID 1002",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "medium",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
-    "account:proofuser"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 179
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:04.200782+00:00",
-   "last_seen": "2026-10-29T15:50:04.200782+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 4.0,
-   "summary": "created: proofuser UID 1001",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host rocky9",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof creates proofuser to give the persistence modules something to find.",
-    "rule": "proof-proofuser-account"
-   },
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "medium",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0,
-   "entities": [
-    "account:scanner"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 174
-    }
-   ],
-   "first_seen": "2026-10-29T15:49:58.698342+00:00",
-   "last_seen": "2026-10-29T15:49:58.698342+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 4.0,
-   "summary": "created: scanner UID 1000",
-   "suppressed_by": {
-    "file": "tests/integration/proof-whitelist.yaml",
-    "layer": "host rocky9",
-    "owner": "compromise-checker proofs",
-    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
-    "rule": "proof-scanner-account"
-   },
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
@@ -2608,182 +2544,7 @@
    "band": "low",
    "category": "compromise indicator",
    "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "account:apache"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 205
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:21.172464+00:00",
-   "last_seen": "2026-10-29T15:50:21.172464+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: apache UID 48",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "group:apache"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 204
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:21.143539+00:00",
-   "last_seen": "2026-10-29T15:50:21.143539+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group apache",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "group:nginx"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 202
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:20.934007+00:00",
-   "last_seen": "2026-10-29T15:50:20.934007+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group nginx",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "group:postdrop"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 182
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:07.838428+00:00",
-   "last_seen": "2026-10-29T15:50:07.838428+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group postdrop",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "group:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 180
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:07.665892+00:00",
-   "last_seen": "2026-10-29T15:50:07.665892+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: group postfix",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "account:nginx"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 203
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:20.960459+00:00",
-   "last_seen": "2026-10-29T15:50:20.960459+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: nginx UID 995",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "account:postfix"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 181
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:07.725135+00:00",
-   "last_seen": "2026-10-29T15:50:07.725135+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "created: postfix UID 89",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
+   "contribution": 0.1569,
    "entities": [
     "account:www-data"
    ],
@@ -2803,58 +2564,6 @@
    "title": "An account or group was changed (from the logs)",
    "uncertain": null,
    "variant": "created"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "account:postfix",
-    "group:mail"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 183
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:07.908176+00:00",
-   "last_seen": "2026-10-29T15:50:07.908176+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "member added: postfix group mail",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_member_added"
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
-   "check": "account.log_changes",
-   "contribution": 0.0517,
-   "entities": [
-    "account:postfix",
-    "group:mail"
-   ],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "event": 184
-    }
-   ],
-   "first_seen": "2026-10-29T15:50:07.908371+00:00",
-   "last_seen": "2026-10-29T15:50:07.908371+00:00",
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "member added: postfix group mail",
-   "title": "An account or group was changed (from the logs)",
-   "uncertain": null,
-   "variant": "group_member_added"
   },
   {
    "band": "low",
@@ -3054,7 +2763,7 @@
    "new": false,
    "raised_by_pack": null,
    "ratio": 1.5,
-   "summary": "3 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
+   "summary": "3 list file(s), 3 not put down to a package installed, updated or removed since the baseline (rpmdb.sqlite, rpmdb.sqlite-shm, rpmdb.sqlite-wal): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
    "title": "The package managers' checksum lists changed since the baseline",
    "uncertain": null,
    "variant": null
@@ -3152,6 +2861,297 @@
    "title": "Packages installed since the baseline",
    "uncertain": null,
    "variant": "installed"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:apache"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 205
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:21.172464+00:00",
+   "last_seen": "2026-10-29T15:50:21.172464+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: apache UID 48 (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:apache"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 204
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:21.143539+00:00",
+   "last_seen": "2026-10-29T15:50:21.143539+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group apache (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:nginx"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 202
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:20.934007+00:00",
+   "last_seen": "2026-10-29T15:50:20.934007+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group nginx (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:postdrop"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 182
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.838428+00:00",
+   "last_seen": "2026-10-29T15:50:07.838428+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group postdrop (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "group:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 180
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.665892+00:00",
+   "last_seen": "2026-10-29T15:50:07.665892+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: group postfix (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:nginx"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 203
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:20.960459+00:00",
+   "last_seen": "2026-10-29T15:50:20.960459+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: nginx UID 995 (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:postfix"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 181
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.725135+00:00",
+   "last_seen": "2026-10-29T15:50:07.725135+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: postfix UID 89 (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:proofuser"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 179
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:04.200782+00:00",
+   "last_seen": "2026-10-29T15:50:04.200782+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: proofuser UID 1001 (before the baseline)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host rocky9",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates proofuser to give the persistence modules something to find.",
+    "rule": "proof-proofuser-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:scanner"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 174
+    }
+   ],
+   "first_seen": "2026-10-29T15:49:58.698342+00:00",
+   "last_seen": "2026-10-29T15:49:58.698342+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "created: scanner UID 1000 (before the baseline)",
+   "suppressed_by": {
+    "file": "tests/integration/proof-whitelist.yaml",
+    "layer": "host rocky9",
+    "owner": "compromise-checker proofs",
+    "reason": "The proof creates the scanner account, as docs/scanner-account.md sets it up.",
+    "rule": "proof-scanner-account"
+   },
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "created"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 183
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.908176+00:00",
+   "last_seen": "2026-10-29T15:50:07.908176+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "member added: postfix group mail (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
+   "check": "account.log_changes",
+   "contribution": 0.0,
+   "entities": [
+    "account:postfix",
+    "group:mail"
+   ],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "event": 184
+    }
+   ],
+   "first_seen": "2026-10-29T15:50:07.908371+00:00",
+   "last_seen": "2026-10-29T15:50:07.908371+00:00",
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "member added: postfix group mail (before the baseline)",
+   "title": "An account or group was changed (from the logs)",
+   "uncertain": null,
+   "variant": "group_member_added"
   },
   {
    "band": "info",
@@ -3743,7 +3743,7 @@
     "capped": null,
     "check": "mail.domains",
     "contribution": 1.3863,
-    "finding": 37,
+    "finding": 35,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "Mail to many recipient domains never written to before"
@@ -3752,7 +3752,7 @@
     "capped": null,
     "check": "mail.volume",
     "contribution": 1.3863,
-    "finding": 38,
+    "finding": 36,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "A sudden jump in outgoing mail"
@@ -3761,7 +3761,7 @@
     "capped": null,
     "check": "mail.web_user",
     "contribution": 1.3863,
-    "finding": 39,
+    "finding": 37,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "Mail submitted by a web-server account"
@@ -3770,7 +3770,7 @@
     "capped": null,
     "check": "net.config",
     "contribution": 1.3863,
-    "finding": 40,
+    "finding": 38,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "A network configuration file was changed"
@@ -3779,7 +3779,7 @@
     "capped": null,
     "check": "net.metadata",
     "contribution": 1.3863,
-    "finding": 41,
+    "finding": 39,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "A program other than the cloud agent reached the metadata address"
@@ -3788,7 +3788,7 @@
     "capped": null,
     "check": "net.tunnel",
     "contribution": 1.3863,
-    "finding": 42,
+    "finding": 40,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "An SSH client forwarding ports (a tunnel)"
@@ -3797,7 +3797,7 @@
     "capped": null,
     "check": "persistence.changes",
     "contribution": 1.3863,
-    "finding": 45,
+    "finding": 43,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "A new cron file"
@@ -3806,7 +3806,7 @@
     "capped": null,
     "check": "software.repository",
     "contribution": 1.3863,
-    "finding": 51,
+    "finding": 49,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "A package signing key was added"
@@ -3815,7 +3815,7 @@
     "capped": null,
     "check": "software.tools",
     "contribution": 1.3863,
-    "finding": 53,
+    "finding": 51,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "An attack or tunnelling tool was installed"
@@ -3824,7 +3824,7 @@
     "capped": null,
     "check": "ssh.login",
     "contribution": 1.3863,
-    "finding": 55,
+    "finding": 53,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "Logins from an address never seen before"
@@ -3833,7 +3833,7 @@
     "capped": null,
     "check": "web.exploit",
     "contribution": 1.3863,
-    "finding": 58,
+    "finding": 56,
     "ratio": 4.0,
     "share": 0.0157,
     "title": "A traversal attack answered"
@@ -3887,7 +3887,7 @@
     "capped": "family",
     "check": "net.tunnel",
     "contribution": 0.6931,
-    "finding": 43,
+    "finding": 41,
     "ratio": 4.0,
     "share": 0.0078,
     "title": "An SSH session listening on a port (a remote forward)"
@@ -3896,7 +3896,7 @@
     "capped": "family",
     "check": "software.repository",
     "contribution": 0.6931,
-    "finding": 52,
+    "finding": 50,
     "ratio": 4.0,
     "share": 0.0078,
     "title": "A package repository was added"
@@ -3905,16 +3905,25 @@
     "capped": "family",
     "check": "software.tools",
     "contribution": 0.6931,
-    "finding": 54,
+    "finding": 52,
     "ratio": 4.0,
     "share": 0.0078,
     "title": "An attack or tunnelling tool was installed"
    },
    {
+    "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.5363,
+    "finding": 34,
+    "ratio": 4.0,
+    "share": 0.0061,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
     "capped": null,
     "check": "container.new",
     "contribution": 0.4055,
-    "finding": 69,
+    "finding": 58,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "A container new since the baseline"
@@ -3923,7 +3932,7 @@
     "capped": null,
     "check": "net.listener",
     "contribution": 0.4055,
-    "finding": 70,
+    "finding": 59,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "A new listening port"
@@ -3932,7 +3941,7 @@
     "capped": null,
     "check": "package.changed",
     "contribution": 0.4055,
-    "finding": 74,
+    "finding": 63,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "The package managers' checksum lists changed since the baseline"
@@ -3941,7 +3950,7 @@
     "capped": null,
     "check": "software.packages",
     "contribution": 0.4055,
-    "finding": 76,
+    "finding": 65,
     "ratio": 1.5,
     "share": 0.0046,
     "title": "Packages installed since the baseline"
@@ -4004,7 +4013,7 @@
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.231,
-    "finding": 71,
+    "finding": 60,
     "ratio": 1.5,
     "share": 0.0026,
     "title": "A new listening port"
@@ -4013,7 +4022,7 @@
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.231,
-    "finding": 72,
+    "finding": 61,
     "ratio": 1.5,
     "share": 0.0026,
     "title": "A new listening port"
@@ -4022,19 +4031,10 @@
     "capped": "family",
     "check": "net.listener",
     "contribution": 0.231,
-    "finding": 73,
+    "finding": 62,
     "ratio": 1.5,
     "share": 0.0026,
     "title": "A new listening port"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.1766,
-    "finding": 34,
-    "ratio": 4.0,
-    "share": 0.002,
-    "title": "An account or group was changed (from the logs)"
    },
    {
     "capped": "family",
@@ -4074,9 +4074,18 @@
    },
    {
     "capped": "family",
+    "check": "account.log_changes",
+    "contribution": 0.1569,
+    "finding": 57,
+    "ratio": 1.5,
+    "share": 0.0018,
+    "title": "An account or group was changed (from the logs)"
+   },
+   {
+    "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.1386,
-    "finding": 46,
+    "finding": 44,
     "ratio": 4.0,
     "share": 0.0016,
     "title": "A new systemd file"
@@ -4085,10 +4094,28 @@
     "capped": "family",
     "check": "persistence.changes",
     "contribution": 0.1386,
-    "finding": 47,
+    "finding": 45,
     "ratio": 4.0,
     "share": 0.0016,
     "title": "A new systemd file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 46,
+    "ratio": 4.0,
+    "share": 0.0016,
+    "title": "A new startup file"
+   },
+   {
+    "capped": "family",
+    "check": "persistence.changes",
+    "contribution": 0.1386,
+    "finding": 47,
+    "ratio": 4.0,
+    "share": 0.0016,
+    "title": "A new startup file"
    },
    {
     "capped": "family",
@@ -4098,114 +4125,6 @@
     "ratio": 4.0,
     "share": 0.0016,
     "title": "A new startup file"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
-    "finding": 49,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new startup file"
-   },
-   {
-    "capped": "family",
-    "check": "persistence.changes",
-    "contribution": 0.1386,
-    "finding": 50,
-    "ratio": 4.0,
-    "share": 0.0016,
-    "title": "A new startup file"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 59,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 60,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 61,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 62,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 63,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 64,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 65,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 66,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 67,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
-   },
-   {
-    "capped": "family",
-    "check": "account.log_changes",
-    "contribution": 0.0517,
-    "finding": 68,
-    "ratio": 1.5,
-    "share": 0.0006,
-    "title": "An account or group was changed (from the logs)"
    }
   ],
   "hygiene_and_exposure": {

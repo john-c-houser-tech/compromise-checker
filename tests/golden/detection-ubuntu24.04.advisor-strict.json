@@ -570,16 +570,6 @@
   },
   {
    "id": "F-60",
-   "check": "package.changed",
-   "variant": null,
-   "band": "low",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.4055,
-   "suppressed": false
-  },
-  {
-   "id": "F-61",
    "check": "software.packages",
    "variant": "installed",
    "band": "low",
@@ -606,6 +596,16 @@
    "category": "compromise indicator",
    "new": true,
    "contribution": 0.3466,
+   "suppressed": false
+  },
+  {
+   "id": "F-61",
+   "check": "process.injected",
+   "variant": "replaced",
+   "band": "low",
+   "category": "hygiene",
+   "new": false,
+   "contribution": 0.0,
    "suppressed": false
   },
   {
@@ -639,11 +639,11 @@
    "suppressed": false
   },
   {
-   "id": "F-65",
-   "check": "process.injected",
-   "variant": "replaced",
-   "band": "low",
-   "category": "hygiene",
+   "id": "F-67",
+   "check": "account.log_changes",
+   "variant": "group_created",
+   "band": "info",
+   "category": "compromise indicator",
    "new": false,
    "contribution": 0.0,
    "suppressed": false
@@ -671,16 +671,6 @@
   {
    "id": "F-70",
    "check": "account.log_changes",
-   "variant": "group_created",
-   "band": "info",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.0,
-   "suppressed": false
-  },
-  {
-   "id": "F-71",
-   "check": "account.log_changes",
    "variant": "created",
    "band": "info",
    "category": "compromise indicator",
@@ -689,8 +679,18 @@
    "suppressed": false
   },
   {
-   "id": "F-74",
+   "id": "F-73",
    "check": "files.unowned",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed": false
+  },
+  {
+   "id": "F-74",
+   "check": "package.changed",
    "variant": null,
    "band": "info",
    "category": "compromise indicator",
@@ -809,7 +809,7 @@
    "suppressed": true
   },
   {
-   "id": "F-66",
+   "id": "F-65",
    "check": "account.log_changes",
    "variant": "created",
    "band": "info",
@@ -819,7 +819,7 @@
    "suppressed": true
   },
   {
-   "id": "F-67",
+   "id": "F-66",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "info",
@@ -829,7 +829,7 @@
    "suppressed": true
   },
   {
-   "id": "F-72",
+   "id": "F-71",
    "check": "account.log_changes",
    "variant": "created",
    "band": "info",
@@ -839,7 +839,7 @@
    "suppressed": true
   },
   {
-   "id": "F-73",
+   "id": "F-72",
    "check": "account.log_changes",
    "variant": "created",
    "band": "info",

@@ -1708,50 +1708,6 @@
   },
   {
    "id": "F-60",
-   "check": "package.changed",
-   "variant": null,
-   "band": "low",
-   "category": "compromise indicator",
-   "new": false,
-   "contribution": 0.4055,
-   "suppressed_by": null,
-   "title": "The package managers' checksum lists changed since the baseline",
-   "from_host": {
-    "summary": "30 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
-    "entities": [],
-    "entities_complete": true,
-    "excerpts": [
-     {
-      "where": "checksum_store, since the baseline",
-      "text": "added: /var/lib/dpkg/info/libblas3:amd64.list: ctime=2026-10-29T15:51:03.907981+00:00 gid=0 inode=131026 mode=0644 mtime=2026-10-29T15:51:03.906981+00:00 nlink=1 sha256=a641ffc88576682abb9aed59f38e2ff78e509b8a06859fc888ad188cee397d01 size=381 type=- uid=0"
-     },
-     {
-      "where": "checksum_store, since the baseline",
-      "text": "added: /var/lib/dpkg/info/libblas3:amd64.md5sums: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263062 mode=0644 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=8f3aab4b75ad46c5b9afd85aaceff3d5b33a06646ef502d731aa47ad00739a90 size=297 type=- uid=0"
-     },
-     {
-      "where": "checksum_store, since the baseline",
-      "text": "added: /var/lib/dpkg/info/libblas3:amd64.postinst: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263063 mode=0755 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=cb37abedcfff80c3e67139c572baf4164625f927a9b537d9448817d608f05948 size=197 type=- uid=0"
-     },
-     {
-      "where": "checksum_store, since the baseline",
-      "text": "added: /var/lib/dpkg/info/libblas3:amd64.preinst: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263064 mode=0755 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=a76cb84cb509f595ab5a050ede9511e6e4ec4f9ed914950cf473edaf2106cde0 size=217 type=- uid=0"
-     },
-     {
-      "where": "checksum_store, since the baseline",
-      "text": "added: /var/lib/dpkg/info/libblas3:amd64.prerm: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263065 mode=0755 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=60d4daf7e8c362648f79fd06e965cf0ec1116e92ca1d6bb2424cee4bc96f534a size=195 type=- uid=0"
-     },
-     {
-      "text": "… and 17 more"
-     }
-    ],
-    "uncertain": null,
-    "first_seen": null,
-    "last_seen": null
-   }
-  },
-  {
-   "id": "F-61",
    "check": "software.packages",
    "variant": "installed",
    "band": "low",
@@ -1860,7 +1816,7 @@
    }
   },
   {
-   "id": "F-62",
+   "id": "F-61",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1889,7 +1845,7 @@
    }
   },
   {
-   "id": "F-63",
+   "id": "F-62",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1918,7 +1874,7 @@
    }
   },
   {
-   "id": "F-64",
+   "id": "F-63",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1947,7 +1903,7 @@
    }
   },
   {
-   "id": "F-65",
+   "id": "F-64",
    "check": "process.injected",
    "variant": "replaced",
    "band": "low",
@@ -1976,7 +1932,7 @@
    }
   },
   {
-   "id": "F-68",
+   "id": "F-67",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "info",
@@ -2004,7 +1960,7 @@
    }
   },
   {
-   "id": "F-69",
+   "id": "F-68",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "info",
@@ -2032,7 +1988,7 @@
    }
   },
   {
-   "id": "F-70",
+   "id": "F-69",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "info",
@@ -2060,7 +2016,7 @@
    }
   },
   {
-   "id": "F-71",
+   "id": "F-70",
    "check": "account.log_changes",
    "variant": "created",
    "band": "info",
@@ -2088,7 +2044,7 @@
    }
   },
   {
-   "id": "F-74",
+   "id": "F-73",
    "check": "files.unowned",
    "variant": null,
    "band": "info",
@@ -2107,6 +2063,50 @@
      {
       "where": "unowned_executables",
       "text": "/usr/lib/python3/dist-packages/twisted/plugins/dropin.cache: ctime=2026-07-14T08:55:05.964187+00:00 gid=0 inode=45300 local=False mode=0755 mtime=2026-07-14T08:49:27.964187+00:00 nlink=1 setgid=False setuid=False sha256=c22c46421f20ce5560bca9e806c6e86e3bcb160853c6e57452743a044a474e37 size=5625 type=- uid=0"
+     }
+    ],
+    "uncertain": null,
+    "first_seen": null,
+    "last_seen": null
+   }
+  },
+  {
+   "id": "F-74",
+   "check": "package.changed",
+   "variant": null,
+   "band": "info",
+   "category": "compromise indicator",
+   "new": false,
+   "contribution": 0.0,
+   "suppressed_by": null,
+   "title": "The package managers' checksum lists changed since the baseline",
+   "from_host": {
+    "summary": "30 list file(s), each for a package installed, updated or removed since the baseline, or dpkg's own directory and status file",
+    "entities": [],
+    "entities_complete": true,
+    "excerpts": [
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "added: /var/lib/dpkg/info/libblas3:amd64.list: ctime=2026-10-29T15:51:03.907981+00:00 gid=0 inode=131026 mode=0644 mtime=2026-10-29T15:51:03.906981+00:00 nlink=1 sha256=a641ffc88576682abb9aed59f38e2ff78e509b8a06859fc888ad188cee397d01 size=381 type=- uid=0"
+     },
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "added: /var/lib/dpkg/info/libblas3:amd64.md5sums: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263062 mode=0644 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=8f3aab4b75ad46c5b9afd85aaceff3d5b33a06646ef502d731aa47ad00739a90 size=297 type=- uid=0"
+     },
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "added: /var/lib/dpkg/info/libblas3:amd64.postinst: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263063 mode=0755 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=cb37abedcfff80c3e67139c572baf4164625f927a9b537d9448817d608f05948 size=197 type=- uid=0"
+     },
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "added: /var/lib/dpkg/info/libblas3:amd64.preinst: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263064 mode=0755 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=a76cb84cb509f595ab5a050ede9511e6e4ec4f9ed914950cf473edaf2106cde0 size=217 type=- uid=0"
+     },
+     {
+      "where": "checksum_store, since the baseline",
+      "text": "added: /var/lib/dpkg/info/libblas3:amd64.prerm: ctime=2026-10-29T15:51:03.909981+00:00 gid=0 inode=263065 mode=0755 mtime=2024-08-09T02:33:22+00:00 nlink=1 sha256=60d4daf7e8c362648f79fd06e965cf0ec1116e92ca1d6bb2424cee4bc96f534a size=195 type=- uid=0"
+     },
+     {
+      "text": "… and 15 more"
      }
     ],
     "uncertain": null,
@@ -2423,7 +2423,7 @@
    }
   },
   {
-   "id": "F-66",
+   "id": "F-65",
    "check": "account.log_changes",
    "variant": "created",
    "band": "info",
@@ -2451,7 +2451,7 @@
    }
   },
   {
-   "id": "F-67",
+   "id": "F-66",
    "check": "account.log_changes",
    "variant": "group_created",
    "band": "info",
@@ -2479,7 +2479,7 @@
    }
   },
   {
-   "id": "F-72",
+   "id": "F-71",
    "check": "account.log_changes",
    "variant": "created",
    "band": "info",
@@ -2507,7 +2507,7 @@
    }
   },
   {
-   "id": "F-73",
+   "id": "F-72",
    "check": "account.log_changes",
    "variant": "created",
    "band": "info",

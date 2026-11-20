@@ -1031,6 +1031,75 @@ def test_mode_changes_by_what_they_allow():
     ]
 
 
+def test_checksum_lists_changed_by_their_own_packages_updates_are_information():
+    info = "/var/lib/dpkg/info"
+    before = snap(
+        checksum_store={
+            info: {"mtime": "1"},
+            "/var/lib/dpkg/status": {"sha256": "1"},
+            f"{info}/libc6:amd64.md5sums": {"sha256": "1"},
+            f"{info}/libc-bin.conffiles": {"sha256": "1"},
+            f"{info}/coreutils.md5sums": {"sha256": "1"},
+        },
+        packages={
+            "libc6 amd64": {"version": "2.39-0ubuntu8.6"},
+            "libc-bin amd64": {"version": "2.39-0ubuntu8.6"},
+            "coreutils amd64": {"version": "9.4-3ubuntu6"},
+        },
+    )
+
+    def after(coreutils="1", packages=None):
+        return snap(
+            checksum_store={
+                info: {"mtime": "2"},
+                "/var/lib/dpkg/status": {"sha256": "2"},
+                f"{info}/libc6:amd64.md5sums": {"sha256": "2"},
+                f"{info}/libc-bin.conffiles": {"sha256": "2"},
+                f"{info}/coreutils.md5sums": {"sha256": coreutils},
+            },
+            packages=packages
+            or {
+                "libc6 amd64": {"version": "2.39-0ubuntu8.7"},
+                "libc-bin amd64": {"version": "2.39-0ubuntu8.7"},
+                "coreutils amd64": {"version": "9.4-3ubuntu6"},
+            },
+        )
+
+    def lists(later):
+        found = of(run([], later, baseline=before), "package.changed")
+        return [f for f in found if f.title.startswith("The package managers' checksum lists")]
+
+    # An update rewrote its own packages' lists, and dpkg's directory and status file.
+    [updated] = lists(after())
+    assert updated.band == "info" and "installed, updated or removed" in updated.summary
+    # coreutils' list rewritten with no coreutils update: what hiding a replaced ls looks like.
+    [hidden] = lists(after(coreutils="2"))
+    assert hidden.band == "low" and "coreutils.md5sums" in hidden.summary
+    # No package changed at all: dpkg's own files can't be put down to one.
+    [unexplained] = lists(after(packages=before.sections["packages"].items))
+    assert unexplained.band == "low"
+    # coreutils' list rewritten and `touch coreutils.list`: its installed time moved, its
+    # version didn't. Not an update.
+    touched = {**after().sections["packages"].items}
+    touched["coreutils amd64"] = {"version": "9.4-3ubuntu6", "installed": "later"}
+    [still] = lists(after(coreutils="2", packages=touched))
+    assert still.band == "low" and "coreutils.md5sums" in still.summary
+    # libc6:i386 installed beside libc6:amd64 explains libc6:i386's lists, not amd64's.
+    other_arch = {**before.sections["packages"].items, "libc6 i386": {"version": "2.39"}}
+    other_arch["libc-bin amd64"] = {"version": "2.39-0ubuntu8.7"}
+    [hidden_arch] = lists(after(packages=other_arch))
+    assert hidden_arch.band == "low" and "libc6:amd64.md5sums" in hidden_arch.summary
+    # A package listing cut short reads as packages removed: those explain nothing.
+    cut = snap(
+        checksum_store=after().sections["checksum_store"].items,
+        packages={"coreutils amd64": {"version": "9.4-3ubuntu6"}},
+    )
+    cut.sections["packages"].complete = False
+    cut.sections["packages"].gaps = ["listing_truncated: /var/lib/dpkg/status"]
+    found = of(run([], cut, baseline=before), "package.changed")
+    assert [f.band for f in found if f.title.startswith("The package managers'")] == ["low"]
+
+
 def test_a_process_that_ran_its_program_afresh_inherits_nothing():
     # sshd re-executes itself per connection: the listener predates the
     # update, but a child started after it can't hold a replaced library

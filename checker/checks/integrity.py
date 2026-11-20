@@ -225,25 +225,89 @@ def package_changed(context: Context) -> list[Finding]:
         )
     diff = context.changes("checksum_store")
     if diff is not None and (diff["added"] or diff["changed"] or diff["removed"]):
-        touched = len(diff["added"]) + len(diff["changed"]) + len(diff["removed"])
+        touched = [(how, k) for how in ("added", "changed", "removed") for k in diff[how]]
+        updated = _packages_changed(context)
+        installed = {_name_arch(k) for k in context.items("packages")}
+        unexplained = [(how, k) for how, k in touched if not _list_explained(k, updated, installed)]
+        if unexplained:
+            names = ", ".join(k.rsplit("/", 1)[-1] for _, k in unexplained[:3])
+            more = f" and {len(unexplained) - 3} more" if len(unexplained) > 3 else ""
+            band = "low"
+            summary = (
+                f"{len(touched)} list file(s), {len(unexplained)} not put down to a package"
+                f" installed, updated or removed since the baseline ({names}{more}): expected"
+                " after package installs and updates; a rewrite to hide a replaced file would"
+                " show here too"
+            )
+        else:
+            band = "info"
+            summary = (
+                f"{len(touched)} list file(s), each for a package installed, updated or removed"
+                " since the baseline, or dpkg's own directory and status file"
+            )
+        shown = unexplained + [t for t in touched if t not in unexplained]
         findings.append(
             Finding(
                 "package.changed",
                 "The package managers' checksum lists changed since the baseline",
                 COMPROMISE,
-                "low",
-                f"{touched} list file(s): expected after package installs and updates; a rewrite"
-                " to hide a replaced file would show here too",
+                band,
+                summary,
                 [],
-                [
-                    context.change_ref("checksum_store", k, how)
-                    for how in ("added", "changed", "removed")
-                    for k in list(diff[how])[:20]
-                ],
+                [context.change_ref("checksum_store", k, how) for how, k in shown[:20]],
                 uncertain=context.uncertain("checksum_store"),
             )
         )
     return findings
+
+
+DPKG_INFO = "/var/lib/dpkg/info"
+DPKG_OWN = frozenset({DPKG_INFO, "/var/lib/dpkg/status"})
+
+
+def _name_arch(key: str) -> tuple[str, str]:
+    """A packages-section key ("name arch", or "name arch version" for kernels) as
+    (name, architecture)."""
+    parts = key.split(" ")
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def _packages_changed(context: Context) -> set[tuple[str, str]]:
+    """(name, architecture) of each package updated since the baseline (its version
+    changed: a `touch` of its .list moves only its installed time), and of each one
+    installed or removed when both package listings were whole (one cut short makes
+    packages look removed)."""
+    diff = context.changes("packages")
+    if diff is None:
+        return set()
+    keys = [k for k, fields in diff["changed"].items() if "version" in fields]
+    if diff.get("comparable", True):
+        keys += [*diff["added"], *diff["removed"]]
+    return {_name_arch(k) for k in keys}
+
+
+def _list_explained(
+    path: str, updated: set[tuple[str, str]], installed: set[tuple[str, str]]
+) -> bool:
+    """Whether a changed checksum list is one dpkg rewrote for its own package's update:
+    <package>:<arch>.<kind> or <package>.<kind> in its info directory, matched by name and
+    architecture (a list without one belongs to a package installed for a single
+    architecture), or, with some package updated, the directory itself and its status
+    file. rpm keeps one database for every package, so a change there can't be put down
+    to one."""
+    if not updated:
+        return False
+    if path in DPKG_OWN:
+        return True
+    folder, _, name = path.rpartition("/")
+    if folder != DPKG_INFO or "." not in name:
+        return False
+    stem = name.rsplit(".", 1)[0]
+    if ":" in stem:
+        package, arch = stem.split(":", 1)
+        return (package, arch) in updated
+    archs = {a for n, a in installed | updated if n == stem}
+    return len(archs) == 1 and (stem, archs.pop()) in updated
 
 
 # Character devices (major, minor) that give no access to anything: null,

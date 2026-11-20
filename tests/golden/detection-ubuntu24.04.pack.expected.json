@@ -2879,202 +2879,6 @@
   {
    "band": "low",
    "category": "compromise indicator",
-   "check": "package.changed",
-   "contribution": 0.4055,
-   "entities": [],
-   "entities_complete": true,
-   "evidence": [
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.postinst",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.preinst",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.prerm",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libblas3:amd64.triggers",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.symbols",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblinear4:amd64.triggers",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.symbols",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/liblua5.4-0:amd64.triggers",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libssh2-1t64:amd64.list",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libssh2-1t64:amd64.md5sums",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info/libssh2-1t64:amd64.shlibs",
-      "added"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/info",
-      "changed"
-     ]
-    },
-    {
-     "change": [
-      "ubuntu24.04-20261029T154938Z-2def1384",
-      "checksum_store",
-      "/var/lib/dpkg/status",
-      "changed"
-     ]
-    }
-   ],
-   "first_seen": null,
-   "last_seen": null,
-   "likelihood_ratio": null,
-   "new": false,
-   "raised_by_pack": null,
-   "ratio": 1.5,
-   "summary": "30 list file(s): expected after package installs and updates; a rewrite to hide a replaced file would show here too",
-   "title": "The package managers' checksum lists changed since the baseline",
-   "uncertain": null,
-   "variant": null
-  },
-  {
-   "band": "low",
-   "category": "compromise indicator",
    "check": "software.packages",
    "contribution": 0.4055,
    "entities": [
@@ -3526,6 +3330,186 @@
   {
    "band": "info",
    "category": "compromise indicator",
+   "check": "package.changed",
+   "contribution": 0.0,
+   "entities": [],
+   "entities_complete": true,
+   "evidence": [
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.postinst",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.preinst",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.prerm",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libblas3:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.symbols",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblinear4:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.shlibs",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.symbols",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/liblua5.4-0:amd64.triggers",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.list",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.md5sums",
+      "added"
+     ]
+    },
+    {
+     "change": [
+      "ubuntu24.04-20261029T154938Z-2def1384",
+      "checksum_store",
+      "/var/lib/dpkg/info/libssh2-1t64:amd64.shlibs",
+      "added"
+     ]
+    }
+   ],
+   "first_seen": null,
+   "last_seen": null,
+   "likelihood_ratio": null,
+   "new": false,
+   "raised_by_pack": null,
+   "ratio": 1.0,
+   "summary": "30 list file(s), each for a package installed, updated or removed since the baseline, or dpkg's own directory and status file",
+   "title": "The package managers' checksum lists changed since the baseline",
+   "uncertain": null,
+   "variant": null
+  },
+  {
+   "band": "info",
+   "category": "compromise indicator",
    "check": "persistence.homes",
    "contribution": 0.0,
    "entities": [
@@ -3790,7 +3774,7 @@
     "contribution": 4.6052,
     "finding": 0,
     "ratio": 100.0,
-    "share": 0.0495,
+    "share": 0.0497,
     "title": "An account other than root has UID 0"
    },
    {
@@ -3799,7 +3783,7 @@
     "contribution": 4.6052,
     "finding": 1,
     "ratio": 100.0,
-    "share": 0.0495,
+    "share": 0.0497,
     "title": "/etc/ld.so.preload loads a library into every program"
    },
    {
@@ -3808,7 +3792,7 @@
     "contribution": 4.6052,
     "finding": 25,
     "ratio": 100.0,
-    "share": 0.0495,
+    "share": 0.0497,
     "title": "A web account started a shell running an attacker's command"
    },
    {
@@ -3817,7 +3801,7 @@
     "contribution": 2.9957,
     "finding": 2,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A new account whose primary group is root-equivalent"
    },
    {
@@ -3826,7 +3810,7 @@
     "contribution": 2.9957,
     "finding": 3,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A container that holds the host since the baseline"
    },
    {
@@ -3835,7 +3819,7 @@
     "contribution": 2.9957,
     "finding": 4,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A new privileged file since the baseline"
    },
    {
@@ -3844,7 +3828,7 @@
     "contribution": 2.9957,
     "finding": 6,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A new script in a web root"
    },
    {
@@ -3853,7 +3837,7 @@
     "contribution": 2.9957,
     "finding": 7,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A shell history file is a link to /dev/null"
    },
    {
@@ -3862,7 +3846,7 @@
     "contribution": 2.9957,
     "finding": 8,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A log was truncated since the previous collection"
    },
    {
@@ -3871,7 +3855,7 @@
     "contribution": 2.9957,
     "finding": 9,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A logging service that ran at the baseline isn't running"
    },
    {
@@ -3880,7 +3864,7 @@
     "contribution": 2.9957,
     "finding": 12,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "AppArmor profiles were unloaded or stopped enforcing"
    },
    {
@@ -3889,7 +3873,7 @@
     "contribution": 2.9957,
     "finding": 13,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A web-server account reached SMB"
    },
    {
@@ -3898,7 +3882,7 @@
     "contribution": 2.9957,
     "finding": 14,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A PAM line was added that runs a program (pam_exec)"
    },
    {
@@ -3907,7 +3891,7 @@
     "contribution": 2.9957,
     "finding": 16,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A process whose program was deleted"
    },
    {
@@ -3916,7 +3900,7 @@
     "contribution": 2.9957,
     "finding": 18,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A shell talking to a network socket (a reverse shell)"
    },
    {
@@ -3925,7 +3909,7 @@
     "contribution": 2.9957,
     "finding": 19,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A new authorized SSH key"
    },
    {
@@ -3934,7 +3918,7 @@
     "contribution": 2.9957,
     "finding": 22,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "An sshd setting was added"
    },
    {
@@ -3943,7 +3927,7 @@
     "contribution": 2.9957,
     "finding": 23,
     "ratio": 20.0,
-    "share": 0.0322,
+    "share": 0.0323,
     "title": "A new sudo rule without a password (NOPASSWD)"
    },
    {
@@ -3952,7 +3936,7 @@
     "contribution": 2.0794,
     "finding": 42,
     "ratio": 8.0,
-    "share": 0.0223,
+    "share": 0.0224,
     "title": "A web account probing the host"
    },
    {
@@ -3974,7 +3958,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0173,
+    "share": 0.0174,
     "title": "A new account or key, given privilege, then used to log in"
    },
    {
@@ -3994,7 +3978,7 @@
     "contribution": 1.6094,
     "finding": null,
     "ratio": 5.0,
-    "share": 0.0173,
+    "share": 0.0174,
     "title": "A script new since the baseline answered requests, then the web account started a shell or tool"
    },
    {
@@ -4003,7 +3987,7 @@
     "contribution": 1.3863,
     "finding": 32,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -4012,7 +3996,7 @@
     "contribution": 1.3863,
     "finding": 34,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "Mail to many recipient domains never written to before"
    },
    {
@@ -4021,7 +4005,7 @@
     "contribution": 1.3863,
     "finding": 35,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "A sudden jump in outgoing mail"
    },
    {
@@ -4030,7 +4014,7 @@
     "contribution": 1.3863,
     "finding": 36,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "Mail submitted by a web-server account"
    },
    {
@@ -4039,7 +4023,7 @@
     "contribution": 1.3863,
     "finding": 37,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "A network configuration file was changed"
    },
    {
@@ -4048,7 +4032,7 @@
     "contribution": 1.3863,
     "finding": 39,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "A program other than the cloud agent reached the metadata address"
    },
    {
@@ -4057,7 +4041,7 @@
     "contribution": 1.3863,
     "finding": 40,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "An SSH client forwarding ports (a tunnel)"
    },
    {
@@ -4066,7 +4050,7 @@
     "contribution": 1.3863,
     "finding": 45,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "A new cron file"
    },
    {
@@ -4075,7 +4059,7 @@
     "contribution": 1.3863,
     "finding": 51,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "A package signing key was added"
    },
    {
@@ -4084,7 +4068,7 @@
     "contribution": 1.3863,
     "finding": 53,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "An attack or tunnelling tool was installed"
    },
    {
@@ -4093,7 +4077,7 @@
     "contribution": 1.3863,
     "finding": 54,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "Logins from an address never seen before"
    },
    {
@@ -4102,7 +4086,7 @@
     "contribution": 1.3863,
     "finding": 57,
     "ratio": 4.0,
-    "share": 0.0149,
+    "share": 0.015,
     "title": "A traversal attack answered"
    },
    {
@@ -4111,7 +4095,7 @@
     "contribution": 0.6931,
     "finding": 5,
     "ratio": 20.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "A program in a scratch directory"
    },
    {
@@ -4120,7 +4104,7 @@
     "contribution": 0.6931,
     "finding": 15,
     "ratio": 20.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "A new startup file"
    },
    {
@@ -4129,7 +4113,7 @@
     "contribution": 0.6931,
     "finding": 17,
     "ratio": 20.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "A process has code mapped from a scratch or home file"
    },
    {
@@ -4138,7 +4122,7 @@
     "contribution": 0.6931,
     "finding": 24,
     "ratio": 20.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "A script new since the baseline answered requests"
    },
    {
@@ -4147,7 +4131,7 @@
     "contribution": 0.6931,
     "finding": 33,
     "ratio": 4.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "An account or group was changed (from the logs)"
    },
    {
@@ -4156,7 +4140,7 @@
     "contribution": 0.6931,
     "finding": 38,
     "ratio": 4.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "Firewall rules added since the baseline"
    },
    {
@@ -4165,7 +4149,7 @@
     "contribution": 0.6931,
     "finding": 41,
     "ratio": 4.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "An SSH session listening on a port (a remote forward)"
    },
    {
@@ -4174,7 +4158,7 @@
     "contribution": 0.6931,
     "finding": 43,
     "ratio": 4.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "A web shell's name in a web root"
    },
    {
@@ -4183,7 +4167,7 @@
     "contribution": 0.6931,
     "finding": 52,
     "ratio": 4.0,
-    "share": 0.0074,
+    "share": 0.0075,
     "title": "A package repository was added"
    },
    {
@@ -4215,18 +4199,9 @@
    },
    {
     "capped": null,
-    "check": "package.changed",
-    "contribution": 0.4055,
-    "finding": 63,
-    "ratio": 1.5,
-    "share": 0.0044,
-    "title": "The package managers' checksum lists changed since the baseline"
-   },
-   {
-    "capped": null,
     "check": "software.packages",
     "contribution": 0.4055,
-    "finding": 64,
+    "finding": 63,
     "ratio": 1.5,
     "share": 0.0044,
     "title": "Packages installed since the baseline"
@@ -4379,7 +4354,7 @@
     }
    }
   },
-  "log_odds": 90.8275,
+  "log_odds": 90.422,
   "prior": 0.02,
   "prior_source": "golden",
   "probability": 1.0,

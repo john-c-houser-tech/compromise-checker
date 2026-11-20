@@ -22,8 +22,10 @@ from checker.snapshot import Snapshot
 # software changes (8.11); 10: outgoing mail (8.9); 11: web applications (8.12);
 # 12: containers (8.13); 13: logins at unusual hours (Phase 3, decision 4);
 # 14: threat packs' detections (plan 4.5); 15: nftables read as JSON beside text; 16: no
-# folder name from the server in a title (it's in the summary).
-CHECKS_VERSION = 16
+# folder name from the server in a title (it's in the summary); 17: account changes the
+# baseline's own logs held, containerd's new random port, and dpkg lists rewritten by their
+# own package's update are no longer counted (#198-#200).
+CHECKS_VERSION = 17
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"

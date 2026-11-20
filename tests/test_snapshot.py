@@ -671,6 +671,30 @@ def test_run_files_ignore_their_boot_time_facts(tmp_path):
     assert "systemd" not in compare(old, new)
 
 
+def test_a_run_file_read_for_its_content_ignores_its_boot_time_facts(tmp_path):
+    # /etc/resolv.conf -> /run/systemd/resolve/stub-resolv.conf: systemd-resolved writes it
+    # again at every start, the same text in a new inode. Its content source carries the
+    # file's facts too, and they mustn't come back after the record's were dropped.
+    path = "/run/systemd/resolve/stub-resolv.conf"
+
+    def resolver(inode, text="nameserver 127.0.0.53\n"):
+        facts = {"inode": inode, "mtime": str(inode), "ctime": str(inode), "mode": "0644"}
+        source = text_source(50, "network", path, text)
+        source[0]["meta"] = {**source[0]["meta"], **facts}
+        return [rec("network", "file", path=path, uid=0, size=len(text), **facts), *source]
+
+    old = snapshot_of_records(host_records(extra=resolver(1001)), tmp_path)
+    new = snapshot_of_records(host_records(extra=resolver(2958)), tmp_path)
+    item = new.sections["network_files"].items[path]
+    assert not {"inode", "mtime", "ctime"} & item.keys()
+    assert "network_files" not in compare(old, new)
+    # What it says still counts.
+    other = snapshot_of_records(
+        host_records(extra=resolver(2958, "nameserver 6.6.6.6\n")), tmp_path
+    )
+    assert path in compare(old, other)["network_files"]["changed"]
+
+
 def test_an_error_in_a_module_marks_all_its_sections(tmp_path):
     error = {"type": "error", "module": "accounts", "message": "boom"}
     snap = snapshot_of_records(host_records(extra=[error]), tmp_path)

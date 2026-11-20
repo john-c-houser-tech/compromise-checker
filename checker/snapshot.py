@@ -24,9 +24,10 @@ from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Tr
 
 # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks read
 # whole, fail2ban's banned addresses; 15: nft's JSON beside its text
-SNAPSHOT_VERSION = 15
+SNAPSHOT_VERSION = 16
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
-# 11: the folders web servers serve
+# 11: the folders web servers serve; 16: a /run file's content no longer brings back its
+# inode and times
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -827,6 +828,15 @@ def _meta(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k != "path"}
 
 
+def _forget_boot_facts(path: str, item: dict[str, Any]) -> None:
+    """A file under /run is made again at every boot or service start (transient units,
+    generators' output, systemd-resolved's stub-resolv.conf): its content, owner and mode
+    matter, not its inode and times."""
+    if path.startswith("/run/"):
+        for volatile in ("inode", "ctime", "mtime"):
+            item.pop(volatile, None)
+
+
 # --- Text the collector sent ---------------------------------------------------------
 
 
@@ -1027,11 +1037,7 @@ class SnapshotBuilder:
             item = self.section(_FILE_SECTIONS[module]).items.setdefault(data["path"], {})
             item.update(_meta(data))
             item.setdefault("record", name)
-            if data["path"].startswith("/run/"):
-                # Remade at every boot (transient units, generators' output):
-                # its content, owner and mode matter, not its inode and times.
-                for volatile in ("inode", "ctime", "mtime"):
-                    item.pop(volatile, None)
+            _forget_boot_facts(data["path"], item)
 
     def source_start(self, start: SourceStart) -> None:
         if start.kind == "command" and start.module == "network":
@@ -1127,6 +1133,7 @@ class SnapshotBuilder:
         item = self.section(section).items.setdefault(start.name, {})
         for key, value in (start.meta or {}).items():
             item.setdefault(key, value)
+        _forget_boot_facts(start.name, item)  # the source's facts, not only the record's
         item["content_sha256"] = digest.hexdigest()
         if cut:
             item["content_cut"] = True

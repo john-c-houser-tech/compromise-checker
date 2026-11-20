@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import re
 import secrets
@@ -108,6 +109,12 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--name", default="Compromise Checker")
     parser.add_argument("--chromium", default=os.environ.get("CHROMIUM", "/usr/bin/chromium"))
+    parser.add_argument(
+        "--scoring-changed",
+        action="store_true",
+        help="the checker's scoring changed since the save: take its new results (each is"
+        " printed), unless a whitelist rule has expired since the last check",
+    )
     args = parser.parse_args()
     dataset = args.dataset.resolve()
     args.out = args.out.resolve()
@@ -121,7 +128,7 @@ def main() -> int:
         home = demo.working_copy(dataset, scratch)
         # From here on, the checker's code reads this copy and never the laptop's own home.
         os.environ["CHECKER_HOME"] = str(home)
-        score_again(home)
+        score_again(home, scoring_changed=args.scoring_changed)
         names = NAMES | {name: "admin" for name in demo.names_of(dataset)}
         return photograph(home, demo.addresses_of(dataset), names, args)
     except demo.DemoError as exc:
@@ -137,17 +144,84 @@ def main() -> int:
             )
 
 
-def score_again(home: Path) -> None:
+def score_again(home: Path, scoring_changed: bool = False) -> None:
     """Each server's latest result worked out again in the copy, with the same evidence and the
     same rules. A stored result names its whitelist by a digest that holds each rule file's full
     path, and the copy's files are in another folder from the server's: without this, every
     server would read "Settings have changed since this result". A rule's expiry counts from the
     day this runs, not the day of the last check, so the run stops if any server's result moves:
-    the pictures must show what the checks said."""
+    the pictures must show what the checks said.
+
+    When the checker's scoring changed since the save (`scoring_changed`), a result that moves is
+    the new code's and is taken, and printed; one that moves because a rule expired still stops
+    the run. Each check since each server's baseline is then worked out again too, oldest first,
+    and the latest last: the pages compare a result with the check before it and with the one
+    before it for the same collection, and would otherwise say "The check before showed" or
+    "This same check first showed" the old code's band, a note about the upgrade, not about the
+    fleet. A check from before a server's baseline is left as it was: worked out again, it would
+    compare with a baseline accepted after it ran."""
     before = results(home)
+    _analyze_all(home)
+    after = results(home)
+    moved = sorted(h for h in before.keys() | after.keys() if before.get(h) != after.get(h))
+    if not moved:
+        return
+    said = ", ".join(f"{h} ({before.get(h)} -> {after.get(h)})" for h in moved)
+    if not scoring_changed:
+        sys.exit(
+            f"screenshots: scoring the copy again changed {said}. A whitelist rule may have"
+            " expired since the last check: take the pictures the day the data was saved. If"
+            " the checker's scoring changed since the save, --scoring-changed takes the new"
+            " results."
+        )
+    if expired := expired_rules(home):
+        sys.exit(
+            "screenshots: scoring the copy again changed "
+            + said
+            + ", and whitelist rules have expired since the last check ("
+            + "; ".join(f"{h}: {', '.join(rules)}" for h, rules in sorted(expired.items()))
+            + "): the pictures would show results the checks never gave. Take them from a"
+            " fresh save."
+        )
+    for host in moved:
+        print(
+            f"screenshots: scored by the newer code: {host} {before.get(host)} -> {after.get(host)}"
+        )
+    for host, bundle in checks_since_baselines(home):
+        _analyze(home, [host, "--bundle", bundle])
+    if (again := results(home)) != after:
+        sys.exit(f"screenshots: scoring the copy a second time moved it again: {after} -> {again}")
+
+
+def checks_since_baselines(home: Path) -> list[tuple[str, str]]:
+    """(server, check) for each check collected since its server's current baseline, oldest
+    first, so each server's latest comes last."""
+    from checker.baseline import current_baseline, usable_bundles
+    from checker.evidence import Store, database_file
+
+    store = Store(database_file(home), read_only=True)
+    try:
+        found = []
+        for host in store.hosts():
+            baseline = current_baseline(store, host)
+            if baseline is None:
+                continue
+            since = store.bundle(baseline["bundle_id"])["started_at"]
+            rows = [r for r in usable_bundles(store, host) if r["started_at"] >= since]
+            found += [(r["started_at"], host, r["id"]) for r in rows]
+    finally:
+        store.close()
+    return [(host, bundle) for _, host, bundle in sorted(found)]
+
+
+def _analyze_all(home: Path) -> None:
+    _analyze(home, ["--all"])
+
+
+def _analyze(home: Path, words: list[str]) -> None:
     try:
         done = subprocess.run(
-            [sys.executable, "-I", "-m", "checker", "analyze", "--all"],
+            [sys.executable, "-I", "-m", "checker", "analyze", *words],
             env={**os.environ, "CHECKER_HOME": str(home)},
             capture_output=True,
             text=True,
@@ -158,14 +232,29 @@ def score_again(home: Path) -> None:
         sys.exit("screenshots: scoring the copy again took over 30 minutes; stopped")
     if done.returncode:
         sys.exit(f"screenshots: scoring the copy again failed:\n{done.stderr.strip()[-2000:]}")
-    after = results(home)
-    if moved := sorted(h for h in before.keys() | after.keys() if before.get(h) != after.get(h)):
-        sys.exit(
-            "screenshots: scoring the copy again changed "
-            + ", ".join(f"{h} ({before.get(h)} -> {after.get(h)})" for h in moved)
-            + ". A whitelist rule may have expired since the last check: take the pictures"
-            " the day the data was saved."
-        )
+
+
+def expired_rules(home: Path) -> dict[str, list[str]]:
+    """The whitelist rules each server's result now finds expired, from the report the copy's
+    checker writes (into the copy, which is deleted)."""
+    out = home / "screenshots-expired.json"
+    done = subprocess.run(
+        [sys.executable, "-I", "-m", "checker", "report", "--all", "--format", "json"]
+        + ["--plain", "--output", str(out)],
+        env={**os.environ, "CHECKER_HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=1800,
+    )
+    if done.returncode:
+        sys.exit(f"screenshots: reading the copy's rules failed:\n{done.stderr.strip()[-2000:]}")
+    hosts = json.loads(out.read_text()).get("hosts") or []
+    return {
+        h["host"]: [str(r) for r in h["whitelist_rules_expired"]]
+        for h in hosts
+        if h.get("whitelist_rules_expired")
+    }
 
 
 def results(home: Path) -> dict[str, tuple[str | None, float | None]]:

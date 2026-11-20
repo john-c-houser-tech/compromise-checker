@@ -2226,6 +2226,44 @@ def test_the_pictures_folder_can_never_be_the_dataset_or_hold_it(tmp_path):
     assert "an earlier run's copy" in screenshots.refusal(dataset, other)
 
 
+def test_scoring_again_takes_newer_scoring_only_when_asked_and_never_past_an_expired_rule(
+    tmp_path, monkeypatch, capsys
+):
+    pytest.importorskip("playwright")
+    import subprocess
+
+    import screenshots
+
+    old = {"staging-1": ("High", 0.5664), "shop-web-1": ("Critical", 1.0)}
+    new = {"staging-1": ("Low", 0.0461), "shop-web-1": ("Critical", 1.0)}
+
+    def scored(before, after, expired=None, again=None):
+        answers = iter([before, after, again or after])
+        monkeypatch.setattr(screenshots, "results", lambda home: next(answers))
+        monkeypatch.setattr(screenshots, "expired_rules", lambda home: expired or {})
+        monkeypatch.setattr(screenshots, "checks_since_baselines", lambda home: [("db-1", "b2")])
+        monkeypatch.setattr(
+            screenshots.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0)
+        )
+
+    scored(old, old)
+    screenshots.score_again(tmp_path)  # nothing moved: nothing to say
+    scored(old, new)
+    with pytest.raises(SystemExit, match="--scoring-changed takes the new results"):
+        screenshots.score_again(tmp_path)
+    scored(old, new)
+    screenshots.score_again(tmp_path, scoring_changed=True)
+    assert "staging-1 ('High', 0.5664) -> ('Low', 0.0461)" in capsys.readouterr().out
+    # Every check since the baseline worked out again, so the pages don't note the old code's
+    # bands: the latest results must hold.
+    scored(old, new, again=old)
+    with pytest.raises(SystemExit, match="a second time moved it again"):
+        screenshots.score_again(tmp_path, scoring_changed=True)
+    scored(old, new, expired={"staging-1": ["host staging-1/backup-job"]})
+    with pytest.raises(SystemExit, match="staging-1: host staging-1/backup-job"):
+        screenshots.score_again(tmp_path, scoring_changed=True)
+
+
 def test_the_people_who_used_the_demo_are_named_from_its_own_records(tmp_path):
     """Seen in review: "john (web interface)" was in the evidence page's custody list."""
     import sqlite3

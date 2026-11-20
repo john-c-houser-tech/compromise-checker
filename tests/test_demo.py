@@ -2226,6 +2226,90 @@ def test_the_pictures_folder_can_never_be_the_dataset_or_hold_it(tmp_path):
     assert "an earlier run's copy" in screenshots.refusal(dataset, other)
 
 
+def test_scoring_again_takes_newer_code_only_when_asked_and_never_past_an_expired_rule(
+    tmp_path, monkeypatch, capsys
+):
+    pytest.importorskip("playwright")
+    import screenshots
+
+    old = {"staging-1": ("High", 0.5664), "shop-web-1": ("Critical", 1.0)}
+    new = {"staging-1": ("Low", 0.0461), "shop-web-1": ("Critical", 1.0)}
+    v15, v16 = {"snapshot": 15}, {"snapshot": 16}
+
+    def facts(versions, expired=(), previous=None):
+        hosts = ("staging-1", "shop-web-1")
+        return {
+            h: {"versions": versions, "expired": list(expired), "previous_versions": previous}
+            for h in hosts
+        }
+
+    def scored(seen, kept, analysed=None):
+        """`seen`: what results() gives, in turn; `kept`: what stored() gives, in turn."""
+        seen, kept = iter(seen), iter(kept)
+        monkeypatch.setattr(screenshots, "results", lambda home: next(seen))
+        monkeypatch.setattr(screenshots, "stored", lambda home: next(kept))
+        monkeypatch.setattr(screenshots, "checks_since_baselines", lambda home: [("db-1", "b4")])
+        calls = analysed if analysed is not None else []
+        monkeypatch.setattr(screenshots, "_analyze", lambda home, words: calls.append(words))
+        return calls
+
+    # Without the flag: nothing moved, nothing to say; a move stops it.
+    scored([old, old], [facts(v15), facts(v15)])
+    screenshots.score_again(tmp_path)
+    scored([old, new], [facts(v15), facts(v16)])
+    with pytest.raises(SystemExit, match="--scoring-changed takes the new results"):
+        screenshots.score_again(tmp_path)
+    # A rule expired since the last check stops it either way, moved or not (shop-web-1 at
+    # 100% can't move).
+    for flag in (False, True):
+        scored([old, old], [facts(v15), facts(v15, expired=["host shop-web-1/r1"])])
+        with pytest.raises(SystemExit, match="shop-web-1: host shop-web-1/r1"):
+            screenshots.score_again(tmp_path, scoring_changed=flag)
+    # A rule that had expired before the save was in the checks' results already.
+    scored([old, old], [facts(v15, ["host x/r0"]), facts(v15, ["host x/r0"])])
+    screenshots.score_again(tmp_path)
+    # With the flag: a move with the code unchanged isn't the newer code's.
+    scored([old, new], [facts(v16), facts(v16)])
+    with pytest.raises(SystemExit, match="code versions unchanged"):
+        screenshots.score_again(tmp_path, scoring_changed=True)
+    # The newer code's moves are taken, and every check since the baselines is scored again,
+    # even when no latest result moved.
+    for latest in (new, old):
+        calls = scored([old, latest, latest], [facts(v15), facts(v16), facts(v16, previous=v16)])
+        screenshots.score_again(tmp_path, scoring_changed=True)
+        assert calls == [["--all"], ["db-1", "--bundle", "b4"]]
+    assert "staging-1 ('High', 0.5664) -> ('Low', 0.0461)" in capsys.readouterr().out
+    # The latest results must hold, and the check before each latest must be the new code's.
+    scored([old, new, old], [facts(v15), facts(v16)])
+    with pytest.raises(SystemExit, match="a second time moved it again"):
+        screenshots.score_again(tmp_path, scoring_changed=True)
+    scored([old, new, new], [facts(v15), facts(v16), facts(v16, previous=v15)])
+    with pytest.raises(SystemExit, match="is from before its baseline"):
+        screenshots.score_again(tmp_path, scoring_changed=True)
+
+
+def test_checks_since_baselines_are_those_after_each_servers_baseline_oldest_first(home):
+    pytest.importorskip("playwright")
+    import screenshots
+    from test_snapshot import add_bundle, host_records
+
+    base, store, _, _ = home
+    for name, minutes in (("w1", 0), ("w2", 10), ("w3", 20), ("w4", 30)):
+        add_bundle(home, name, minutes, host_records(), host="web01")
+    for name, minutes in (("d1", 5), ("d2", 15), ("d3", 25)):
+        add_bundle(home, name, minutes, host_records(), host="db01")
+    add_bundle(home, "n1", 1, host_records(), host="new01")  # no baseline yet: left alone
+    store.record_baseline("web01", "w1", "first", None)
+    store.record_baseline("db01", "d1", "first", None)
+    store.record_baseline("db01", "d2", "accepted", b"x")  # the current one: d2, not d1
+    assert screenshots.checks_since_baselines(base) == [
+        ("web01", "w2"),
+        ("web01", "w3"),
+        ("db01", "d3"),
+        ("web01", "w4"),
+    ]
+
+
 def test_the_people_who_used_the_demo_are_named_from_its_own_records(tmp_path):
     """Seen in review: "john (web interface)" was in the evidence page's custody list."""
     import sqlite3

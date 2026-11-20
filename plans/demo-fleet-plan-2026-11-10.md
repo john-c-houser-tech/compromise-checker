@@ -277,6 +277,7 @@ folder on dev:
 3. `screenshots.py --dataset ~/demo-saves/run-<id>-backup --out docs/screenshots`, the same
    night: every page `ok` with no overflow and no page errors. It works each result out again
    in its copy, with rule expiry counted from that day, and stops if any score moves.
+   `--scoring-changed` when the checker's scoring changed since the save (see below).
 4. Look at all six before they go in: the demo banner on each; no evidence-key reminder (the
    script says the key is backed up, in its copy only); no red banner for password logins or a
    pending restart (#184); no "Settings have changed since this result" line (see below).
@@ -289,3 +290,15 @@ result looked scored against another whitelist. `screenshots.py` now runs `check
 in its copy first: the same evidence and rules, worked out again, scores unchanged. The digest
 itself is fixed in its own PR, since a restored or moved checker home showed the same; the five-day
 run's server still stores the old form, so the script's step stays needed for its data.
+
+**Done 2026-11-20 (a day late: Thursday's last check ran, the save didn't).** The checker's server
+was restarted first (a libc6 update's note), then saved twice (`run-a9020b`, `-backup`, both PASS).
+The first pictures showed staging-1, which the story never touched, as "Signs of a break-in, 57%":
+four false alarms after Ubuntu's daily update (#197 resolver file under /run, #198 setup accounts
+in the logs, #199 containerd's random port, #200 dpkg checksum lists), each fixed narrowly and
+reviewed twice, plus #196 for a test dated 2026-11-15. The pictures were then taken again from the
+same save with `--scoring-changed`: the newer code's results are taken and printed (unless a
+whitelist rule has expired since the last check, which still stops the run), and every check since
+each server's baseline is worked out again, oldest first, so the pages don't say "The check before
+showed" or "This same check first showed" the old code's bands. Checks from before a baseline are
+left as they were. staging-1 now reads Low 4%, shop-web-1 Critical 100%.

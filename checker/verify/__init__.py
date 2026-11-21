@@ -57,7 +57,9 @@ class Official:
     """A package's files as the distribution signed them, or why not."""
 
     lookup: Lookup
-    files: dict[str, dict] | None = None  # path -> {"sha256": hex} or {"link": target}
+    files: dict[str, dict] | None = (
+        None  # path -> {"sha256": hex}, {"link": target}, {"ghost": True}
+    )
     source: str = ""
     signer: str = ""
     reason: str = ""

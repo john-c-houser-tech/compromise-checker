@@ -106,7 +106,7 @@ def verify_pam(
     previous_results: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """{"version", "baseline_id", "checked_at", "files": {path: result}}:
-    each result has an "outcome" (matched, differs, absent, link or
+    each result has an "outcome" (matched, differs, absent, link, ghost or
     not_checked) and what it was checked against, or the reason it wasn't.
     A result marked "transient" failed on this machine's side (network,
     time, gpgv) and is asked again the next time a verifier is given."""
@@ -398,8 +398,10 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
             # Every module is checked (V.7); the counts and reasons stay the
             # changed ones', and the unchanged are counted apart.
             unchanged[outcome] = unchanged.get(outcome, 0) + 1
-            if outcome == "not_checked":
-                reason = str(result.get("reason") or "")[:200]
+            if outcome in ("not_checked", "ghost"):
+                reason = str(
+                    result.get("reason") or "its package lists it as a file made on the server"
+                )[:200]
                 unchanged_reasons[reason] = unchanged_reasons.get(reason, 0) + 1
             continue
         counts[outcome] = counts.get(outcome, 0) + 1

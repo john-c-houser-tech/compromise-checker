@@ -926,7 +926,7 @@ def test_unchanged_modules_that_can_t_be_checked_are_a_coverage_note(home):
                     verifier=FakeVerifier(None, "isn't in Ubuntu's archive"))  # fmt: skip
     assert not [f for f in first["findings"] if f["check"] == "pam.changes"]
     assert any(
-        "1 PAM module file(s) couldn't be checked" in n and "swapped before the baseline" in n
+        "1 PAM module file(s) couldn't be checked" in n and "swapped before the first check" in n
         and "isn't in Ubuntu's archive" in n
         for n in first["notes"]
     )  # fmt: skip

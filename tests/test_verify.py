@@ -951,6 +951,15 @@ def test_deb_hardlinks_gzip_and_trailing_data():
         deb.decompress(lzma.compress(b"list") + b"junk", "Packages.xz", 10**6)
     with pytest.raises(deb.PackageError, match="more than the limit"):
         deb.decompress(twice, "x.zst", 5)  # the cap counts every stream
+    import gzip
+
+    exact = gzip.compress(b"a" * 10) + gzip.compress(b"b" * 1000)
+    with pytest.raises(deb.PackageError, match="more than the limit"):
+        deb.decompress(exact, "data.tar.gz", 10)  # zlib's 0 is no limit: never asked
+    with pytest.raises(deb.PackageError, match="cut short"):
+        deb.decompress(lzma.compress(b"list" * 100)[:-8], "Packages.xz", 10**6)
+    with pytest.raises(deb.PackageError, match="more streams than the limit"):
+        deb.decompress(zstd.compress(b"") * 65, "x.zst", 10**6)
 
 
 @needs_gpgv

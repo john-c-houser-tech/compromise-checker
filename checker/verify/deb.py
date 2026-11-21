@@ -99,6 +99,8 @@ def decompress(data: bytes, name: str, cap: int) -> bytes:
     out, rest = [], data
     left = cap
     for _ in range(MAX_STREAMS):
+        if left <= 0:
+            _too_large(name)  # zlib reads a limit of 0 as none at all
         if name.endswith(".zst"):
             engine = zstd.ZstdDecompressor()
         elif name.endswith(".xz"):
@@ -110,11 +112,14 @@ def decompress(data: bytes, name: str, cap: int) -> bytes:
         except (lzma.LZMAError, zstd.ZstdError, zlib.error) as exc:
             raise PackageError(f"{name} doesn't unpack: {exc}") from None
         if not engine.eof:
+            if len(piece) < left:
+                raise PackageError(f"{name} is cut short")
             _too_large(name)
         out.append(piece)
         left -= len(piece)
         rest = engine.unused_data
-        if not rest.strip(b"\0"):
+        # No stream starts with a zero byte: only padding does, so it is read once.
+        if not rest or (rest[:1] == b"\0" and not rest.strip(b"\0")):
             return b"".join(out)
     raise PackageError(f"{name} has more streams than the limit")
 

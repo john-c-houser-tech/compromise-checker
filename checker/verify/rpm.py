@@ -151,7 +151,8 @@ def needed_bytes(data: bytes) -> int:
 
 
 def header_files(main: Header) -> dict[str, dict]:
-    """{absolute path: {"sha256": hex} or {"link": target}} from the header."""
+    """{absolute path: {"sha256": hex}, {"link": target} or {"ghost": True}}
+    from the header (a ghost: listed, not shipped)."""
     bases = main.strings(BASENAMES) or []
     if not bases:
         return {}

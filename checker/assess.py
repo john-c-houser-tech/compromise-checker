@@ -322,7 +322,7 @@ def _unchanged_notes(official: dict[str, Any]) -> list[str]:
     reasons = official_counts(official).get("unchanged_not_checked") or {}
     return [
         f"{count} PAM module file(s) couldn't be checked against the distribution's own"
-        f" packages, so a module swapped before the baseline wouldn't show there: {reason}"
+        f" packages, so a module swapped before the first check wouldn't show there: {reason}"
         for reason, count in sorted(reasons.items())
     ]
 

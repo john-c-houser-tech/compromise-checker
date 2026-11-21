@@ -1,6 +1,6 @@
 # Checking changed PAM modules against the distribution's own packages (2026-11-21)
 
-Issue #189, for #185. Draft 1, for John to read before any code.
+Issue #189, for #185. Draft 1; all four open decisions settled by John on 2026-11-21.
 
 ## The problem
 
@@ -70,6 +70,11 @@ that one known alias (the collector already reports it, `merged_dirs`), never an
 3. The header's name, version, release and architecture must equal the server's claim, and the
    module's path must appear in it with the matching digest.
 
+**Older versions** (V.1): the main repositories list only the newest pam. Each vault keeps a
+repository for every minor release (Rocky 9.0–9.8, Alma 9.0–9.9 and 10.0–10.3), with every pam
+version released in it, signed with the same key. A release such as `el9_8.1` names its minor
+(9.8). A plain `el9` doesn't, so the checker tries the minors from the newest down.
+
 ### Red Hat Enterprise Linux itself
 
 Red Hat's packages need a subscription to download, so the checker can't fetch them by default.
@@ -97,6 +102,7 @@ the checks:
 |---|---|
 | Every changed module `matched` | **One low finding**, "PAM modules updated by Ubuntu's own packages", listing the packages and versions |
 | A module `differs` from the official file | **High, per file**, "A PAM module differs from Ubuntu's package for the installed version". This is the strongest version of the finding: the real file was available and didn't match |
+| `matched`, but an older version than at the baseline | **Medium**, "PAM was moved back to an older Ubuntu package", naming both versions (decision 2) |
 | `not_checked` | **High, per file**, as today, with the reason shown |
 
 A mix of results is reported as a mix: the matched modules get one low finding, and the rest stay
@@ -129,8 +135,8 @@ snapshot, verification against recorded package data, and the checks:
 
 - **Hosts the checker machine needs to reach:** `archive.ubuntu.com`, `security.ubuntu.com` and
   `ports.ubuntu.com` (arm64), `snapshot.ubuntu.com` and `api.launchpad.net` (older versions);
-  `dl.rockylinux.org` and `repo.almalinux.org`, plus their vault hosts
-  if old versions live there (step V.1 finds out). One setting replaces them with the
+  `dl.rockylinux.org` (its `/vault/` too) and `repo.almalinux.org` plus `vault.almalinux.org`
+  (older versions, V.1). One setting replaces them with the
   organization's own mirror.
 - **Without network access** everything stays high, with the note saying so. Nothing fails.
 - **What leaves the machine:** requests for public package files by name and version. No server
@@ -142,27 +148,43 @@ snapshot, verification against recorded package data, and the checks:
   cached. Signed indexes are kept for a few hours.
 - **Limits:** a size cap per download, a time cap for the whole step (about a minute), and HTTPS
   where the host offers it (the signatures carry the trust either way).
-- **No new Python dependency** if V.1 confirms it: `gpgv` is already on Ubuntu and Rocky (apt and
-  dnf rely on it). Reading Ubuntu's `.deb` data needs zstd, which Python 3.12 lacks. The options
-  are the `zstandard` package or the system `zstd` program, decided in V.1.
+- **One new Python dependency, for Ubuntu's packages only** (V.1): Ubuntu's `.deb` data is zstd,
+  and the checker machine runs Python 3.12 on Ubuntu 24.04 and Rocky 9 and 10, which can't read
+  it. Python 3.14 can (`compression.zstd`). So: `backports.zstd; python_version < "3.14"`, the
+  same interface, dropped once every checker machine has 3.14. `gpgv` comes with apt on Ubuntu.
+  On Rocky the installer adds `gnupg2` to be sure, checked in V.6's install proof.
 
 ## Open decisions
 
-1. **On by default?** I'd say yes: it only fetches public files, and without it every PAM update
-   is a break-in. An organization that allows no outbound access turns it off or names its mirror.
+1. **On by default: DECIDED yes (John, 2026-11-21).** It only fetches public files, and without it
+   every PAM update reads as a break-in. An organization that allows no outbound access turns it
+   off or names its mirror.
 2. **A downgrade to an older official version.** The module matches a real signed package, but an
-   older one than at the baseline (an intruder could put back a version with a known flaw). I'd
-   say **medium**, "PAM was downgraded to an older Ubuntu package", rather than low.
+   older one than at the baseline (an intruder could put back a version with a known flaw).
+   **DECIDED medium (John, 2026-11-21):** "PAM was moved back to an older Ubuntu package", naming
+   both versions.
 3. **Verify every module at each collection, or only the changed ones?** Checking all of them at
    the first collection would also catch a module trojaned **before** the baseline, which today
-   nothing catches. With the cache the cost is one fetch per package version. I'd say all of them,
-   but as a second step after the changed-only version works.
+   nothing catches. With the cache the cost is one fetch per package version. **DECIDED (John,
+   2026-11-21): all of them, as step V.7, after the changed-only version is proven.**
 4. **Later, `package.changed`:** the same check could cover every critical path it watches (sshd,
-   sudo, the loader, and so on). This plan stops at PAM.
+   sudo, the loader, and so on). **DECIDED (John, 2026-11-21): this plan stays PAM-only.** After
+   V.7 works, `package.changed` gets its own issue, decided then from how the PAM version holds up
+   in use.
+
+5. **Ubuntu Pro (ESM) packages: OPEN, for later.** Servers attached to Ubuntu Pro also get
+   updates from ESM, Ubuntu's extended support: separate servers (`esm.ubuntu.com`) that need
+   the organization's Pro token, with packages signed by another key. Today such a version is
+   reported "an Ubuntu Pro (ESM) version: can't be checked yet" and stays high (V.2 names it
+   from the `+esm` in the version, without searching). This matters most for **Ubuntu 22.04
+   from April 2027**, when its free updates end and fixes come only through ESM, and for 24.04
+   in 2029. Many organizations, government ones among them, run Pro. Supporting it means a
+   setting for the Pro token on the checker's machine (kept like the advisor's key), the ESM
+   signing keys pinned, and the ESM lists' own `InRelease` chain. To decide before April 2027.
 
 ## Steps (one pull request each)
 
-- **V.1 Prove the chains by hand.** On one Ubuntu 24.04 and one Rocky 9 package: `gpgv` on
+- **V.1 Prove the chains by hand. DONE 2026-11-21** (results below). On one Ubuntu 24.04 and one Rocky 9 package: `gpgv` on
   `InRelease`, `gpgv` on an rpm's header signature, a range request for the header, zstd, and
   where older versions live **on both systems**. For Ubuntu that means a `libpam-modules` version
   that has dropped off `-updates`: whether a dated copy has it, which key signs that copy's
@@ -171,16 +193,125 @@ snapshot, verification against recorded package data, and the checks:
   short note in this file. No product code.
 - **V.2 The verifier** (`checker/verify/`): fetch, check signatures, read file hashes, cache.
   Tested offline with packages built and signed by a test key, plus recorded real signed indexes.
-- **V.3 Collector: owner hints.** The owner and architecture of each file in a PAM module
+- **V.3 Collector: owner hints. DONE 2026-11-21** (below). The owner and architecture of each file in a PAM module
   directory (reusing #188's `record_pam_owners`), kept out of the comparison. Collector version
   bump.
 - **V.4 The step and its settings:** run after collection, save `official_files`, the on/off and
   mirror settings, notes in the report and web pages.
+- **Time for the step (V.4, from a side note on #210):** V.2 gives the whole run one deadline
+  (about a minute). A server on the newest version takes 2-5 seconds; one an update behind,
+  needing a dated copy, took 15-18 seconds live. Several servers behind on different versions
+  in one run would use the minute up and stay high ("out of time"). V.4 settles it: a share of
+  time per server as well as a cap for the run, signed lists kept on disk for a few hours (as
+  "Caching" above says; V.2 keeps them only for the run), and the verified results already
+  cached by version, so a version is fetched once for the whole fleet.
+- **Finding the version (V.4, from #211's reviews, checked on five real systems):** an owner
+  with an architecture is looked up as `packages["<name> <arch>"]`. dpkg names the architecture
+  only for Multi-Arch: same packages, so an owner without one (Architecture: all, or Multi-Arch:
+  no, such as libpam-tmpdir) is the **single** `packages` entry with that name; none or several
+  is "not checked". Also "not checked", with the reason: an owner marked `several` (more than
+  one package lists the path), an owner with no `packages` entry (dpkg's half-installed states,
+  which the package list leaves out), two rpm entries for one name and architecture (an
+  interrupted dnf), a `packages_pending` collection (rpm's log not yet written back), and
+  directories (the owner list names them too; only files have a digest).
 - **V.5 The check:** `pam.changes` uses the results. The tests are the ten attacks above, end to
-  end.
+  end, plus the ones below.
+- **Held to the baseline (V.4/V.5, from the #210 security review).** Every field the verifier
+  is given is the server's claim, so a match only proves "a genuine file for the system,
+  release, package and version the server named". A 24.04 server could copy 22.04's genuine
+  `pam_unix.so` into place and claim 22.04, or claim an old version with a known flaw for one
+  module only. So the step asks only with the **system, release and architecture an earlier
+  collection recorded**, and doesn't explain the change (stays high, with the reason) when the
+  current collection says otherwise. A module whose **owner package differs** from the
+  baseline's, or whose version is lower than the baseline's (by real dpkg/rpm ordering), isn't
+  explained either: the version case is decision 2's medium. Tests: the release switch, mixed
+  versions inside one package, and an owner swap.
 - **V.6 Docs and proof:** `docs/checks.md`, the security and privacy policy, the install page's
   outbound hosts, and a scoring calibration rerun. Then a Linode proof on Ubuntu 24.04 and Rocky 9
   (a real PAM update should read low, a swapped module high). Cents, with one OK from John.
 
+- **V.7 Every module, not only the changed ones** (decision 3): check all PAM modules at the
+  first collection and now and again after, so a module swapped before the baseline shows as
+  "differs from the package". Starts after V.6's proof passes.
+
 Each PR gets two independent agent reviews, and V.2 and V.5 also get a security review, before
 John merges. V.2–V.5 can't help anyone until all of them are in, so they ride to main together.
+
+## V.1 results (2026-11-21, by hand from the laptop, no product code)
+
+Spike scripts walked each chain against the real servers, for `libpam-modules` (Ubuntu) and `pam`
+(Rocky, Alma), reading `pam_unix.so` and `pam_permit.so`.
+
+**Ubuntu: works.**
+- `InRelease` for 22.04, 24.04 and 26.04 (release, `-updates`, `-security`) all verify with `gpgv`
+  against one key: *Ubuntu Archive Automatic Signing Key (2018)*, `F6EC B376 2474 EDA9 D21B 7022
+  8719 20D1 991B C93C`.
+- `InRelease` → `Packages.xz` → `.deb` → the module's SHA-256: every hash matched, read in memory.
+- Paths: 22.04 ships modules in `/lib/x86_64-linux-gnu/security/`, 24.04 in `/usr/lib/...`. The
+  merged-`/usr` alias is needed.
+- **Older versions:** `-updates` lists only `1.5.3-5ubuntu5.7`. Launchpad's publishing history
+  (`getPublishedBinaries`, no sign-in) lists every version with when it was published and
+  superseded. The dated copy from inside that window (`snapshot.ubuntu.com/ubuntu/20260801T000000Z/`
+  for 5ubuntu5.6, `20240701T000000Z` for 5ubuntu5.1) has a signed `InRelease` with the same key,
+  and the whole chain passed. Copies start in early 2023: a 2023-03-01 copy exists, a 2023-01-01
+  one is 404. Only the Release, Updates and Security pockets count. Launchpad also lists Proposed
+  and Deleted entries.
+- Ubuntu's `InRelease` has no `Valid-Until`, so an old list can be replayed. That can only offer
+  older real packages, which decision 2 already makes medium.
+
+**Rocky Linux and AlmaLinux, 9 and 10: works, two ways.**
+- `repomd.xml.asc` exists and verifies for all four (Rocky 9 `21CB 256A … 350D 275D`, Rocky 10
+  `FC22 6859 … 6FED FC85`, Alma 9 `BF18 AC28 … B86B 3716`, Alma 10 `EE6D B7B9 … C2A1 E572`).
+  `repomd` → `primary` → the rpm's SHA-256 matched in every case.
+- The rpm's own RSA header signature (tag 268) verifies with `gpgv` as a detached signature over
+  the header. A **range request** (HTTP 206, using `primary`'s `header-range`) fetches 72–124 KB
+  instead of the whole 520–580 KB package.
+- `FILEDIGESTS` is SHA-256 (algorithm 8) on all four. For both modules it equals the real file in
+  the package's payload (checked with `bsdtar`).
+- Older versions: see "Older versions" under Rocky and AlmaLinux above. Vault repositories verify
+  with the same keys.
+
+**Findings for V.2:**
+- **User-Agent:** `archive.ubuntu.com` answers **403** to Python's default User-Agent for package
+  files (lists are fine). Send `compromise-checker/<version>`, nothing that names the user.
+- **Parse only what was signed:** `gpgv --output` gives the signed text of `InRelease`. Parse that,
+  never the file as downloaded. Require `VALIDSIG` with the pinned fingerprint, with `GNUPGHOME`
+  set to an empty private folder, so no other keyring counts.
+- **Decompression caps:** use the streaming decompressor with a maximum output size, never
+  one-shot `decompress()`.
+- **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
+  Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
+- **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.
+
+## V.3 as built (2026-11-21)
+
+- The collector sends `pam_module_owner` (path under the walk's merged-`/usr` form, package, and
+  architecture when dpkg's `<name>:<arch>.list` or rpm's header names it) and always a
+  `pam_owners_summary`. A diverted module is owned by the diverting package, with no
+  architecture. The snapshot keeps them in `live["pam_owners"]`, never compared (snapshot
+  version 17). The version comes from the package list (`packages`, keyed by name and
+  architecture), so the collector sends no versions of its own.
+- From the reviews: only the paths the PAM listing walks count (the directory, then one or two
+  levels, `*` never crossing `/`), since `/usr/lib/jvm/.../security/` and Python's `security`
+  packages would otherwise fill the limit first. Paths over 4,096 bytes or not UTF-8, and
+  package or architecture names that don't look like dpkg's or rpm's, are left out and the
+  owners called incomplete. A path more than one package lists is marked `several`. The
+  snapshot believes "complete" only when the summary's count matches the records it kept.
+
+## V.2 as built (PR #210, 2026-11-21)
+
+- **Where to look, for rpm:** the standard file name, without downloading the repository list:
+  `<repo>/BaseOS|AppStream/x86_64/os/Packages/<name>-<version>-<release>.<arch>.rpm`. Rocky puts
+  packages in a folder per first letter (`Packages/p/`), AlmaLinux in one flat folder. The
+  current repositories first, then the vault, starting with the minor that a release such as
+  `el9_8.1` names.
+- **`%ghost` files** (listed in a package, never shipped, so no digest) are skipped. sssd-client,
+  which ships `pam_sss.so`, has one.
+- **Ubuntu:** the archive over HTTPS. `main` in every suite before `universe`, index files by
+  their hash name first (a mirror part-way through an update still has them), and a list that
+  fails is skipped and named in the reason.
+- **Downloads:** one deadline for the run, held even while a server is slow to send its headers,
+  and redirects only within the same host, never away from HTTPS.
+- **Not covered, all left high:** Ubuntu Pro/ESM versions (decision 5), AlmaLinux 10's `x86_64_v2` builds, and
+  arm64. If Ubuntu ever signs with a second, new key, every Ubuntu check fails until that key is
+  pinned.

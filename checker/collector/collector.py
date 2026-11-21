@@ -5203,32 +5203,41 @@ def canonical_path(absolute, links):
 
 def rpm_owners(run, database, links):
     """{canonical path: package} from rpm's database, reading only each
-    header's names (lighter than rpm_entries). Returns (owners, complete)."""
+    header's names (lighter than rpm_entries). Returns (owners, complete,
+    {"arches": {canonical path: the owner's architecture}, "contested":
+    {canonical paths more than one package lists}})."""
 
-    owners, complete = {}, True
+    owners, complete, arches, contested = {}, True, {}, set()
+    facts = {"arches": arches, "contested": contested}
     connection = sqlite_readonly(run, database)
     try:
         for (blob,) in connection.execute("SELECT blob FROM Packages"):
             run.check_time()
             if len(owners) >= MAX_PACKAGE_FILES:
-                return owners, False
+                return owners, False, facts
             try:
                 header = RpmHeader(bytes(blob))
                 names = header.get(RPMTAG_BASENAMES)
                 if not names:
                     continue
                 package = header.get(RPMTAG_NAME) or "?"
+                arch = header.get(RPMTAG_ARCH)
                 dirs = header.get(RPMTAG_DIRNAMES)
                 indexes = header.get(RPMTAG_DIRINDEXES)
                 states = header.get(RPMTAG_FILESTATES) or [0] * len(names)
                 for i, name in enumerate(names):
                     if states[i] == 0:
-                        owners.setdefault(canonical_path(dirs[indexes[i]] + name, links), package)
+                        canonical = canonical_path(dirs[indexes[i]] + name, links)
+                        if canonical not in owners:
+                            owners[canonical] = package
+                            arches[canonical] = arch if isinstance(arch, str) else None
+                        elif owners[canonical] != package:
+                            contested.add(canonical)
             except (ValueError, IndexError, TypeError, struct.error):
                 complete = False
     finally:
         connection.close()
-    return owners, complete
+    return owners, complete, facts
 
 
 def _dpkg_list_paths(run, package_list):
@@ -5244,16 +5253,20 @@ def _dpkg_list_paths(run, package_list):
 
 def package_owners(run, module, links):
     """({canonical path: package}, which manager, complete, {canonical
-    path: diverting package}) for every file a package installed: dpkg's
-    .list files and diversions, or rpm's database. (None, None, False, {})
-    when there is neither; complete is False when a list was unreadable or
-    cut short."""
+    path: diverting package}, facts) for every file a package installed:
+    dpkg's .list files and diversions, or rpm's database. facts holds
+    "arches" ({canonical path: the owner's architecture, None if its list
+    doesn't say}) and "contested" (paths more than one package lists).
+    (None, None, False, {}, facts) when there is neither; complete is False
+    when a list was unreadable or cut short."""
     owners, complete, diversions = {}, True, {}
+    arches, contested = {}, set()
+    facts = {"arches": arches, "contested": contested}
     if os.path.lexists(path(DPKG_STATUS)):
         try:
             names, cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
         except OSError:
-            return None, None, False, {}
+            return None, None, False, {}, facts
         complete = not cut
         for name in names:
             if not name.endswith(".list"):
@@ -5261,9 +5274,15 @@ def package_owners(run, module, links):
             run.check_time()
             listed, whole = _dpkg_list_paths(run, _join(DPKG_INFO, name))
             complete = complete and whole
-            package = name[: -len(".list")].split(":", 1)[0]
+            # "libpam-modules:amd64.list" for a Multi-Arch: same package
+            package, _, arch = name[: -len(".list")].partition(":")
             for line in listed:
-                owners.setdefault(canonical_path(line, links), package)
+                canonical = canonical_path(line, links)
+                if canonical not in owners:
+                    owners[canonical] = package
+                    arches[canonical] = arch or None
+                elif owners[canonical] != package:
+                    contested.add(canonical)
         # A diversion moves the original package's file aside: that package
         # now owns the diverted-to path, and the file at the original path
         # belongs to the diverting package only if its own list has it —
@@ -5276,28 +5295,34 @@ def package_owners(run, module, links):
         for original, (diverted, diverter) in dpkg_diversions().items():
             key = canonical_path(original, links)
             owners[canonical_path(diverted, links)] = owners.get(key)
-            claimed = False
+            arches[canonical_path(diverted, links)] = arches.get(key)
+            claimed, claimed_arch = False, None
             for name in list_names.get(diverter, ()):
                 paths, _ = _dpkg_list_paths(run, _join(DPKG_INFO, name))
                 # Compared after mapping merged /usr: Ubuntu's t64 packages
                 # divert /lib/... and list the file as /usr/lib/....
-                claimed = claimed or key in {canonical_path(p, links) for p in paths}
+                if not claimed and key in {canonical_path(p, links) for p in paths}:
+                    claimed = True
+                    claimed_arch = name[: -len(".list")].partition(":")[2] or None
             if claimed:
                 owners[key] = diverter
+                arches[key] = claimed_arch
             else:
                 owners.pop(key, None)
+                arches.pop(key, None)
             diversions[key] = diverter
-        return owners, "dpkg", complete, diversions
+        return owners, "dpkg", complete, diversions, facts
     for candidate in RPM_DATABASES:
         resolved, risk = resolve_links(candidate)
         if risk or not os.path.isfile(path(resolved)):
             continue
-        owners, complete = rpm_owners(run, resolved, links)
-        return owners, "rpm", complete, {}
-    return None, None, False, {}
+        owners, complete, facts = rpm_owners(run, resolved, links)
+        return owners, "rpm", complete, {}, facts
+    return None, None, False, {}, facts
 
 
 OWNERS_TIME_SHARE = 0.4  # of the module's remaining time, at most
+MAX_PAM_OWNERS = 2000  # owner records for PAM module files (a system has a few hundred)
 
 
 def load_owners(run, module, links):
@@ -5305,7 +5330,7 @@ def load_owners(run, module, links):
     set-user-ID and capability files never depends on it: if it fails or
     runs out of time, those are still reported (without packages) and
     nothing is called unowned. Returns (owners, manager, complete,
-    diversions, problem)."""
+    diversions, facts, problem)."""
     deadline = run.deadline
     run.deadline = min(
         deadline, time.monotonic() + OWNERS_TIME_SHARE * max(0.0, deadline - time.monotonic())
@@ -5313,11 +5338,11 @@ def load_owners(run, module, links):
     try:
         return package_owners(run, module, links) + (None,)
     except ModuleTimeout:
-        return None, None, False, {}, "time"
+        return None, None, False, {}, {}, "time"
     except ImportError as exc:  # no sqlite3 module
-        return None, None, False, {}, f"{type(exc).__name__}: {exc}"
+        return None, None, False, {}, {}, f"{type(exc).__name__}: {exc}"
     except Exception as exc:  # noqa: BLE001 - a damaged database must not cancel the walk
-        return None, None, False, {}, f"{type(exc).__name__}: {exc}"
+        return None, None, False, {}, {}, f"{type(exc).__name__}: {exc}"
     finally:
         run.deadline = deadline
 
@@ -5330,7 +5355,9 @@ def module_system_files(run):
     owning package. Ordinary files are counted, not listed."""
     module = "system_files"
     links = merged_dirs()
-    owners, manager, owners_complete, diversions, owners_problem = load_owners(run, module, links)
+    owners, manager, owners_complete, diversions, facts, owners_problem = load_owners(
+        run, module, links
+    )
     local_roots = tuple(links.get(r, r).rstrip("/") + "/" for r in LOCAL_ROOTS)
     counts = {"files": 0, "privileged": 0, "capabilities": 0, "unowned": 0, "bad_capabilities": 0}
     findings = {"privileged_file": 0, "unowned_executable": 0}
@@ -5432,7 +5459,85 @@ def module_system_files(run):
             "truncated_reason": cut,
         },
     )
+    record_pam_owners(run, module, owners, owners_complete, facts, links)
     run.check_time()
+
+
+def record_pam_owners(run, module, owners, complete, facts, links):
+    """The package (and its architecture) that owns each file in a PAM
+    module directory (#189), so the controller can fetch that package's
+    official copy and compare a changed module against it. These are the
+    server's own claims, used only to find the package: a false one finds
+    nothing to match. Only paths the PAM listing itself walks count (the
+    directory, then one or two levels: `*` matches one path part, never
+    "/"). A path or name too long, not UTF-8 or odd is left out and the
+    owners called incomplete. The summary always comes, so "no owner
+    recorded" is never mistaken for "owned by nothing"."""
+    facts = facts or {}
+    arches, contested = facts.get("arches") or {}, facts.get("contested") or set()
+    dirs = sorted({tuple(canonical_path(p, links).split("/")) for p in PAM_MODULE_DIRS})
+    prefixes = tuple(
+        "/".join(parts[: next((i for i, x in enumerate(parts) if "*" in x), len(parts))])
+        for parts in dirs
+    )
+    selected = []
+    for i, file in enumerate(owners or ()):
+        if i % 4096 == 0:
+            run.check_time()
+        if file.startswith(prefixes) and _in_pam_dir(file, dirs):
+            selected.append(file)
+    count = 0
+    for file in sorted(selected):
+        package, arch = owners[file], arches.get(file)
+        if not package:
+            continue
+        if not (_sendable_path(file) and OWNER_NAME.match(package)) or (
+            arch is not None and not OWNER_NAME.match(arch)
+        ):
+            complete = False
+            continue
+        if count >= MAX_PAM_OWNERS:
+            complete = False
+            break
+        entry = {"path": file, "package": package}
+        if arch:
+            entry["arch"] = arch
+        if file in contested:
+            entry["several"] = True  # more than one package lists it: the owner is a guess
+        run.stream.record(module, "pam_module_owner", entry)
+        count += 1
+    run.stream.record(
+        module,
+        "pam_owners_summary",
+        {"complete": bool(complete) and owners is not None, "count": count},
+    )
+
+
+# A package or architecture name as dpkg and rpm make them.
+OWNER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_~:-]{0,127}\Z")
+
+
+def _in_pam_dir(file, dirs):
+    """Whether `file` is one or two levels inside one of the PAM module
+    directories `dirs` (each a tuple of path parts, glob patterns allowed)."""
+    parts = file.split("/")
+    for pattern in dirs:
+        below = len(parts) - len(pattern)
+        if 1 <= below <= 2 and all(
+            fnmatch.fnmatchcase(part, want) for part, want in zip(parts, pattern)
+        ):
+            return True
+    return False
+
+
+def _sendable_path(file):
+    if len(file) > 4096:
+        return False
+    try:
+        file.encode("utf-8")
+    except UnicodeEncodeError:  # a name that isn't UTF-8 (surrogate-escaped bytes)
+        return False
+    return True
 
 
 # --- Files in unusual places (DESIGN.md §8.6) ---------------------------------------

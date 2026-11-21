@@ -144,7 +144,7 @@ def _verify_line(config: Config) -> str:
     verify = config.verify
     if not verify.enabled:
         return (
-            "Changed PAM modules: not checked against the distribution's packages"
+            "PAM modules: not checked against the distribution's packages"
             " (verify.enabled is off), so a routine PAM update reads as a break-in"
         )
     mirrors = [m for m in (verify.ubuntu_archive, verify.rocky, verify.almalinux) if m]
@@ -155,7 +155,7 @@ def _verify_line(config: Config) -> str:
         else "; older versions aren't looked for (verify.older_versions is off)"
     )
     return (
-        "Changed PAM modules: checked against the distribution's own packages, which this"
+        "PAM modules: checked against the distribution's own packages, which this"
         " machine downloads (public files, by name and version; no server names or findings)"
         + (
             f" from your mirrors ({', '.join(mirrors)}) for the current lists"
@@ -361,7 +361,7 @@ SETTABLE: dict[str, Setting] = {
         Setting(
             ("verify", "enabled"),
             _bool,
-            "on (default) or off: whether changed PAM modules are checked against the"
+            "on (default) or off: whether PAM modules are checked against the"
             " distribution's own packages, which the checker downloads",
         ),
         Setting(

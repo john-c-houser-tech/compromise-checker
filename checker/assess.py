@@ -274,7 +274,7 @@ def official_results(
     # again whenever a verifier is at hand.
     if stored_is_current(stored, baseline_id, retrying=verifier is not None):
         return stored
-    if verifier is None or not official_targets(snapshot, since_baseline):
+    if verifier is None or not official_targets(snapshot, since_baseline, every=True):
         return None
     previous_results = None
     if previous_id and previous_id != baseline_id:
@@ -290,15 +290,19 @@ def official_results(
 def official_notes(official: dict[str, Any] | None, changed: int) -> list[str]:
     """Why changed PAM modules weren't checked against the distribution's
     packages, for the assessment's notes."""
+    if official is not None:
+        notes = _unchanged_notes(official)
+    else:
+        notes = []
     if not changed:
-        return []
+        return notes
     if official is None:
         return [
             f"{changed} changed PAM module file(s) weren't checked against the distribution's"
             " own packages (verify is off, or this collection wasn't checked)"
         ]
     counted = official_counts(official)
-    notes = [
+    notes += [
         f"{count} changed PAM module file(s) couldn't be checked against the distribution's"
         f" own packages: {reason}"
         for reason, count in sorted(counted["not_checked"].items())
@@ -310,6 +314,17 @@ def official_notes(official: dict[str, Any] | None, changed: int) -> list[str]:
             " baseline is taken"
         )
     return notes
+
+
+def _unchanged_notes(official: dict[str, Any]) -> list[str]:
+    """Unchanged modules that couldn't be checked: a module swapped before
+    the baseline wouldn't show there, so the coverage says so (#189, V.7)."""
+    reasons = official_counts(official).get("unchanged_not_checked") or {}
+    return [
+        f"{count} PAM module file(s) couldn't be checked against the distribution's own"
+        f" packages, so a module swapped before the first check wouldn't show there: {reason}"
+        for reason, count in sorted(reasons.items())
+    ]
 
 
 def official_summary(official: dict[str, Any] | None) -> dict[str, Any] | None:

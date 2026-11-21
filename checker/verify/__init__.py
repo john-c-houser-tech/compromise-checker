@@ -22,6 +22,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -29,7 +30,8 @@ from checker.verify import deb, gpg, rpm
 from checker.verify.fetch import Fetcher, FetchError, HttpFetcher
 from checker.verify.words import show
 
-CACHE_FORMAT = 1
+CACHE_FORMAT = 2  # 2: rpm's %ghost files kept
+MISSING_FOR = 24 * 3600  # seconds a package that wasn't found is not asked about again
 
 
 @dataclass(frozen=True)
@@ -55,7 +57,9 @@ class Official:
     """A package's files as the distribution signed them, or why not."""
 
     lookup: Lookup
-    files: dict[str, dict] | None = None  # path -> {"sha256": hex} or {"link": target}
+    files: dict[str, dict] | None = (
+        None  # path -> {"sha256": hex}, {"link": target}, {"ghost": True}
+    )
     source: str = ""
     signer: str = ""
     reason: str = ""
@@ -89,8 +93,9 @@ def package_paths(path: str, merged: dict[str, str]) -> list[str]:
 
 
 def compare(official: Official, path: str, sha256: str, merged: dict[str, str]) -> str:
-    """'matched', 'differs', 'absent' (the package has no such file) or
-    'link' (the package ships a link there, so there is nothing to hash)."""
+    """'matched', 'differs', 'absent' (the package has no such file), 'link'
+    (the package ships a link there, so there is nothing to hash) or 'ghost'
+    (the package lists the path but ships nothing: rpm's %ghost)."""
     if not official.found:
         raise ValueError("compare needs a package that was found")
     entries = [official.files[p] for p in package_paths(path, merged) if p in official.files]
@@ -98,6 +103,8 @@ def compare(official: Official, path: str, sha256: str, merged: dict[str, str]) 
         return "absent"
     if any(e.get("sha256") == (sha256 or "").lower() for e in entries):
         return "matched"
+    if all(e.get("ghost") for e in entries):
+        return "ghost"
     if all("link" in e for e in entries):
         return "link"
     return "differs"
@@ -158,7 +165,10 @@ class Verifier:
             else:
                 return Official(lookup, reason=f"{show(lookup.system)} isn't covered")
         except (deb.PackageError, rpm.PackageError) as exc:
-            return Official(lookup, reason=str(exc), transient=getattr(exc, "transient", False))
+            missing = Official(lookup, reason=str(exc), transient=getattr(exc, "transient", False))
+            if not missing.transient:
+                self._keep_missing(missing)  # not asked about again for a day
+            return missing
         except FetchError as exc:
             return Official(lookup, reason=f"couldn't download: {exc}", transient=True)
         official = Official(lookup, files, source, signer)
@@ -190,6 +200,9 @@ class Verifier:
         path = self._path(lookup)
         if path is None or not self._safe_folder():
             return None
+        missing = self._missing(path, lookup)
+        if missing is not None:
+            return missing
         try:
             if not os.path.isfile(path):
                 return None
@@ -201,12 +214,43 @@ class Verifier:
                 return None  # a key no longer pinned for this system: fetch again
             files = data["files"]
             if not isinstance(files, dict) or not all(
-                isinstance(v, dict) and set(v) in ({"sha256"}, {"link"}) for v in files.values()
+                isinstance(v, dict) and set(v) in ({"sha256"}, {"link"}, {"ghost"})
+                for v in files.values()
             ):
                 return None
             return Official(lookup, files, str(data["source"]), signer, cached=True)
         except (OSError, ValueError, KeyError, TypeError, RecursionError):
             return None
+
+    def _missing(self, path: Path, lookup: Lookup) -> Official | None:
+        """A package that wasn't there, asked about less than a day ago: a
+        vendor's package, say, not asked about from every server every run."""
+        marker = path.with_suffix(".missing")
+        try:
+            data = json.loads(marker.read_text())
+            if data.get("lookup") != asdict(lookup):
+                return None
+            if time.time() - float(data["at"]) > MISSING_FOR:
+                return None
+            return Official(lookup, reason=str(data["reason"])[:300], cached=True)
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            return None
+
+    def _keep_missing(self, official: Official) -> None:
+        path = self._path(official.lookup)
+        if path is None:
+            return
+        data = {"lookup": asdict(official.lookup), "reason": official.reason, "at": time.time()}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not self._safe_folder():
+                return
+            handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".part-")
+            with os.fdopen(handle, "w") as out:
+                json.dump(data, out)
+            os.replace(temporary, path.with_suffix(".missing"))
+        except OSError:
+            pass
 
     def _keep(self, official: Official) -> None:
         path = self._path(official.lookup)

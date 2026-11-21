@@ -731,9 +731,34 @@ def test_results_are_cached_and_a_damaged_cache_is_ignored(pinned, tmp_path):
 
 
 @needs_gpgv
-def test_nothing_is_cached_when_nothing_was_found(pinned, tmp_path):
-    Verifier(tmp_path, fetcher=Site()).package(ROCKY)
-    assert list(tmp_path.iterdir()) == []
+def test_a_package_not_found_is_not_asked_about_again_for_a_day(pinned, tmp_path, monkeypatch):
+    site = Site()
+    Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert not list(tmp_path.glob("*.json"))  # no result: only a marker that it wasn't there
+    assert len(list(tmp_path.glob("*.missing"))) == 1
+    asked = len(site.asked)
+    again = Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert not again.found and again.cached and len(site.asked) == asked
+    import checker.verify as verify
+
+    monkeypatch.setattr(verify, "MISSING_FOR", -1)  # a day later
+    Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert len(site.asked) > asked
+    # A failure on this machine's side is never remembered.
+    site.down = True
+    (next(tmp_path.glob("*.missing"))).unlink()
+    Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert not list(tmp_path.glob("*.missing"))
+
+
+@needs_gpgv
+def test_launchpad_isn_t_asked_about_a_package_ubuntu_doesn_t_have(pinned):
+    site = Site()
+    site.ubuntu(pinned, ARCHIVE, "noble-updates", [("libpam-modules", NOBLE.version, PAM)])
+    vendor = Lookup("ubuntu", "24.04", "duo-unix", "2.0.3", "amd64")
+    official = ubuntu_verifier(site, ubuntu_snapshot=SNAP, launchpad=LP).package(vendor)
+    assert "isn't one of Ubuntu's packages" in official.reason
+    assert not any(u.startswith(LP) or u.startswith(SNAP) for u in site.asked)
 
 
 def test_reasons_when_it_cant_check(monkeypatch):
@@ -829,7 +854,7 @@ def test_rpm_ghost_files_are_skipped_not_refused(pinned):
         Lookup("rocky", "9", "sssd-client", "2.9.9-3.el9", "x86_64")
     )
     assert official.found, official.reason
-    assert "/etc/cifs-utils/idmap-plugin" not in official.files
+    assert official.files["/etc/cifs-utils/idmap-plugin"] == {"ghost": True}  # kept as such
     assert compare(official, pam_sss, sha(b"sss"), {}) == "matched"
 
 
@@ -917,9 +942,24 @@ def test_deb_hardlinks_gzip_and_trailing_data():
         make_ar({"debian-binary": b"2.0\n", "data.tar.gz": gzip.compress(raw.getvalue())})
     )
     assert files["/usr/b"] == files["/usr/a"] == {"sha256": sha(b"a")}
-    twice = zstd.compress(raw.getvalue()) + zstd.compress(b"more")
-    with pytest.raises(deb.PackageError, match="more after its end"):
-        deb.decompress(twice, "data.tar.zst", 10**6)
+    # Streams one after another, and zero padding (Ubuntu's release lists): all unpacked.
+    twice = zstd.compress(b"one ") + zstd.compress(b"two")
+    assert deb.decompress(twice, "x.zst", 10**6) == b"one two"
+    padded = lzma.compress(b"list") + lzma.compress(b" more") + b"\0" * 8
+    assert deb.decompress(padded, "Packages.xz", 10**6) == b"list more"
+    with pytest.raises(deb.PackageError, match="doesn't unpack"):
+        deb.decompress(lzma.compress(b"list") + b"junk", "Packages.xz", 10**6)
+    with pytest.raises(deb.PackageError, match="more than the limit"):
+        deb.decompress(twice, "x.zst", 5)  # the cap counts every stream
+    import gzip
+
+    exact = gzip.compress(b"a" * 10) + gzip.compress(b"b" * 1000)
+    with pytest.raises(deb.PackageError, match="more than the limit"):
+        deb.decompress(exact, "data.tar.gz", 10)  # zlib's 0 is no limit: never asked
+    with pytest.raises(deb.PackageError, match="cut short"):
+        deb.decompress(lzma.compress(b"list" * 100)[:-8], "Packages.xz", 10**6)
+    with pytest.raises(deb.PackageError, match="more streams than the limit"):
+        deb.decompress(zstd.compress(b"") * 65, "x.zst", 10**6)
 
 
 @needs_gpgv

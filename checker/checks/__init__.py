@@ -108,8 +108,8 @@ class Context:
     packs: list[Any] = field(default_factory=list)
     collected_at: str | None = None
     exposures: list[Any] = field(default_factory=list)
-    # Changed PAM modules checked against the distribution's own packages
-    # (checker.official): {"files": {path: result}, ...}, or None when that
+    # PAM modules (every one since V.7) checked against the distribution's own
+    # packages (checker.official): {"files": {path: result}, ...}, or None when that
     # wasn't done for this collection (turned off, or not run).
     official: dict[str, Any] | None = None
 

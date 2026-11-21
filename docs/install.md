@@ -174,8 +174,9 @@ The notice goes within the hour.
 The firewall limits only what comes in. Going out, the tool itself reaches:
 
 - your servers, over SSH, to check them;
-- the distributions' own package servers, when a PAM module on a server has changed or appeared, to check it
-  against the signed package (Ubuntu's archive and its dated copies, Launchpad, and Rocky Linux's and
+- the distributions' own package servers, for the PAM modules on your servers, to check them against the
+  signed packages (once per package version, the first time any server has it; a package the distribution
+  doesn't have is asked about by name at most once a day) (Ubuntu's archive and its dated copies, Launchpad, and Rocky Linux's and
   AlmaLinux's repositories and vaults). `verify.enabled` turns this off, and `verify.older_versions` keeps
   it to the current lists. `verify.ubuntu_archive`, `verify.rocky` and `verify.almalinux` name your own
   mirrors for the current lists; the dated copies, Launchpad and the vaults are still asked unless

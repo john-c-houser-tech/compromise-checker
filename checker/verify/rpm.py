@@ -151,7 +151,8 @@ def needed_bytes(data: bytes) -> int:
 
 
 def header_files(main: Header) -> dict[str, dict]:
-    """{absolute path: {"sha256": hex} or {"link": target}} from the header."""
+    """{absolute path: {"sha256": hex}, {"link": target} or {"ghost": True}}
+    from the header (a ghost: listed, not shipped)."""
     bases = main.strings(BASENAMES) or []
     if not bases:
         return {}
@@ -174,7 +175,10 @@ def header_files(main: Header) -> dict[str, dict]:
         if not path.startswith("/") or "/../" in path + "/":
             raise PackageError(f"an odd path in the package: {path[:200]}")
         if flag & GHOST:
-            continue  # listed, not shipped: whatever is there was made on the server
+            # Listed, not shipped: whatever is there was made on the server.
+            # Kept as such, so it isn't mistaken for a file the package lacks.
+            files[path] = {"ghost": True}
+            continue
         if stat.S_ISREG(mode):
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
                 raise PackageError(f"a file without a SHA-256 in the package: {path[:200]}")

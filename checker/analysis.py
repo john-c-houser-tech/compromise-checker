@@ -214,8 +214,11 @@ def load_official(store: Store, row: Any, identity: x25519.Identity) -> dict[str
     distribution's packages (checker.official), if any."""
     from checker.official import OFFICIAL_VERSION
 
+    derived = store.derived(row["id"], "official")
+    version = derived["parser_version"] if derived is not None else OFFICIAL_VERSION
     try:
-        found = _load_derived(store, row, identity, "official", OFFICIAL_VERSION)
+        # Any stored version: checker.official.stored_is_current says which stand.
+        found = _load_derived(store, row, identity, "official", min(version, OFFICIAL_VERSION))
     except EvidenceError:
         return None  # damaged: these results can be made again, so they're treated as missing
     return json.loads(found[0]) if found else None

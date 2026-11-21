@@ -926,6 +926,8 @@ def _why_not_checked(context: Context, path: str, modules: dict, outcome: str | 
         return "its package has no such file"
     if outcome == "link":
         return "its package has a link there, not a file"
+    if outcome == "ghost":
+        return "its package lists it as a file made on the server, not one it ships"
     if isinstance(raw, dict) and raw.get("outcome") == "not_checked":
         return str(raw.get("reason") or "not checked")
     if isinstance(raw, dict):
@@ -1004,6 +1006,52 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
         f"{path}: {', '.join(sorted(fields))}{note}", [f"path:{path}"], ref, new=new,
         variant="changed",
     )  # fmt: skip
+
+
+# The signed package contradicts the server (#216): a different file, no such
+# file (the server claims an owner that doesn't ship it), or a link there.
+WHAT_THE_PACKAGE_SAYS = {
+    "differs": "not the file in {package}",
+    "absent": "{package}, which the server says owns it, has no such file",
+    "link": "{package} has a link there, not a file",
+}
+
+
+def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list[Finding]:
+    """High findings for modules that aren't their package's file although
+    they haven't changed since the baseline, or there is no baseline yet
+    (#189, V.7): swapped before the baseline was taken, so only the
+    distribution's own package can show it."""
+    modules = context.items("pam")
+    distribution = _distribution(context)
+    found = []
+    for path, result in sorted(((context.official or {}).get("files") or {}).items()):
+        if not isinstance(result, dict) or result.get("how") != "unchanged" or path in reported:
+            continue  # (a module changed in mode only is the change's finding)
+        outcome = result.get("outcome")
+        if outcome not in WHAT_THE_PACKAGE_SAYS or official_result(context, path, modules) is None:
+            continue
+        package = f"{result.get('package')} {result.get('version')}"
+        says = WHAT_THE_PACKAGE_SAYS[outcome].format(package=package)
+        if context.since_baseline is not None:
+            when = "unchanged since the baseline: it was already so when the baseline was taken"
+        elif context.no_baseline == "no baseline yet":
+            when = "found at the first check, before any baseline"
+        else:
+            when = "found without a comparison with the baseline"
+        found.append(
+            Finding(
+                "pam.changes",
+                f"A PAM module differs from {distribution}'s package for the installed version",
+                COMPROMISE,
+                "high",
+                f"{path}: {says}; {when}",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+                variant="differs",
+            )  # fmt: skip
+        )
+    return found
 
 
 def _pam_modules_updated(context: Context, explained: list) -> Finding:
@@ -1086,6 +1134,7 @@ def pam_changes(context: Context) -> list[Finding]:
                 )
         modules = context.items("pam")
         explained: list[tuple[str, str, dict]] = []
+        reported: set[str] = set()
         for how, entries in (
             ("added", (context.changes("pam") or {}).get("added", {})),
             ("changed", (context.changes("pam") or {}).get("changed", {})),
@@ -1101,6 +1150,7 @@ def pam_changes(context: Context) -> list[Finding]:
                 ):
                     continue
                 result = official_result(context, path, modules)
+                reported.add(path)
                 finding = _pam_module_finding(context, path, how, fields, result, modules)
                 if finding is None:
                     explained.append((path, how, result))
@@ -1108,6 +1158,7 @@ def pam_changes(context: Context) -> list[Finding]:
                     findings.append(finding)
         if explained:
             findings.append(_pam_modules_updated(context, explained))
+    findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

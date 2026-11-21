@@ -1006,7 +1006,7 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
     )  # fmt: skip
 
 
-def _unchanged_modules_that_differ(context: Context) -> list[Finding]:
+def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list[Finding]:
     """High findings for modules that aren't their package's file although
     they haven't changed since the baseline, or there is no baseline yet
     (#189, V.7): swapped before the baseline was taken, so only the
@@ -1015,16 +1015,17 @@ def _unchanged_modules_that_differ(context: Context) -> list[Finding]:
     distribution = _distribution(context)
     found = []
     for path, result in sorted(((context.official or {}).get("files") or {}).items()):
-        if not isinstance(result, dict) or result.get("how") != "unchanged":
-            continue
+        if not isinstance(result, dict) or result.get("how") != "unchanged" or path in reported:
+            continue  # (a module changed in mode only is the change's finding)
         if result.get("outcome") != "differs" or official_result(context, path, modules) is None:
             continue
         package = f"{result.get('package')} {result.get('version')}"
-        when = (
-            "found at the first check, before any baseline"
-            if context.since_baseline is None
-            else "unchanged since the baseline: it was already so when the baseline was taken"
-        )
+        if context.since_baseline is not None:
+            when = "unchanged since the baseline: it was already so when the baseline was taken"
+        elif context.no_baseline == "no baseline yet":
+            when = "found at the first check, before any baseline"
+        else:
+            when = "found without a comparison with the baseline"
         found.append(
             Finding(
                 "pam.changes",
@@ -1120,6 +1121,7 @@ def pam_changes(context: Context) -> list[Finding]:
                 )
         modules = context.items("pam")
         explained: list[tuple[str, str, dict]] = []
+        reported: set[str] = set()
         for how, entries in (
             ("added", (context.changes("pam") or {}).get("added", {})),
             ("changed", (context.changes("pam") or {}).get("changed", {})),
@@ -1135,6 +1137,7 @@ def pam_changes(context: Context) -> list[Finding]:
                 ):
                     continue
                 result = official_result(context, path, modules)
+                reported.add(path)
                 finding = _pam_module_finding(context, path, how, fields, result, modules)
                 if finding is None:
                     explained.append((path, how, result))
@@ -1142,7 +1145,7 @@ def pam_changes(context: Context) -> list[Finding]:
                     findings.append(finding)
         if explained:
             findings.append(_pam_modules_updated(context, explained))
-    findings += _unchanged_modules_that_differ(context)
+    findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

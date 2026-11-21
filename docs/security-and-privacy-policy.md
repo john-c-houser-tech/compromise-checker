@@ -430,7 +430,10 @@ version, are on until you turn them off):
   owns it, for the version the server says is installed, checks its signature with keys built into the tool,
   and compares the file: so that a routine update isn't reported as a break-in, and so that a module swapped
   before the first check shows. A package version is downloaded once, the first time any server has it, so
-  after the first check of a fleet a request goes out only when a server has a version not seen before.
+  after the first check of a fleet a request goes out only for a version not seen before. A package the
+  distribution doesn't have (another vendor's, say) is asked about too, by its name and version, at most
+  once a day: on Rocky Linux and AlmaLinux by asking their repositories and vaults for that file, on Ubuntu
+  only by reading the archive's lists (Launchpad isn't asked about a package that isn't in them).
   The requests go to Ubuntu's archive, and to Rocky Linux's and AlmaLinux's current repositories, or to mirrors
   you name for those (`verify.ubuntu_archive`, `verify.rocky`, `verify.almalinux`). For a version no longer in
   the current lists they also go to Ubuntu's dated copies (snapshot.ubuntu.com), with a question to Launchpad

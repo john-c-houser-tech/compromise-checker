@@ -22,6 +22,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from checker.verify.fetch import Fetcher, FetchError, HttpFetcher
 from checker.verify.words import show
 
 CACHE_FORMAT = 1
+MISSING_FOR = 24 * 3600  # seconds a package that wasn't found is not asked about again
 
 
 @dataclass(frozen=True)
@@ -158,7 +160,10 @@ class Verifier:
             else:
                 return Official(lookup, reason=f"{show(lookup.system)} isn't covered")
         except (deb.PackageError, rpm.PackageError) as exc:
-            return Official(lookup, reason=str(exc), transient=getattr(exc, "transient", False))
+            missing = Official(lookup, reason=str(exc), transient=getattr(exc, "transient", False))
+            if not missing.transient:
+                self._keep_missing(missing)  # not asked about again for a day
+            return missing
         except FetchError as exc:
             return Official(lookup, reason=f"couldn't download: {exc}", transient=True)
         official = Official(lookup, files, source, signer)
@@ -190,6 +195,9 @@ class Verifier:
         path = self._path(lookup)
         if path is None or not self._safe_folder():
             return None
+        missing = self._missing(path, lookup)
+        if missing is not None:
+            return missing
         try:
             if not os.path.isfile(path):
                 return None
@@ -207,6 +215,36 @@ class Verifier:
             return Official(lookup, files, str(data["source"]), signer, cached=True)
         except (OSError, ValueError, KeyError, TypeError, RecursionError):
             return None
+
+    def _missing(self, path: Path, lookup: Lookup) -> Official | None:
+        """A package that wasn't there, asked about less than a day ago: a
+        vendor's package, say, not asked about from every server every run."""
+        marker = path.with_suffix(".missing")
+        try:
+            data = json.loads(marker.read_text())
+            if data.get("lookup") != asdict(lookup):
+                return None
+            if time.time() - float(data["at"]) > MISSING_FOR:
+                return None
+            return Official(lookup, reason=str(data["reason"])[:300], cached=True)
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            return None
+
+    def _keep_missing(self, official: Official) -> None:
+        path = self._path(official.lookup)
+        if path is None:
+            return
+        data = {"lookup": asdict(official.lookup), "reason": official.reason, "at": time.time()}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not self._safe_folder():
+                return
+            handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".part-")
+            with os.fdopen(handle, "w") as out:
+                json.dump(data, out)
+            os.replace(temporary, path.with_suffix(".missing"))
+        except OSError:
+            pass
 
     def _keep(self, official: Official) -> None:
         path = self._path(official.lookup)

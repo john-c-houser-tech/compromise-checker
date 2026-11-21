@@ -1,7 +1,7 @@
 """PAM modules checked against the distribution's own packages (#189, V.4 and V.7).
 
 The step between a collection and its checks: for each file in a PAM
-module directory that changed or appeared since the baseline, find the
+module directory (changed, added, and since V.7 unchanged), find the
 package the server says owns it and the version the server says is
 installed, fetch the distribution's signed copy (checker.verify) and
 compare the file by path. The results are stored with the collection, so a
@@ -39,7 +39,7 @@ MODULE_PATH = re.compile(r"/(?:usr/)?lib(?:64)?/(?:[^/]+/)?security/[^/]+(?:/[^/
 @dataclass
 class Target:
     path: str
-    how: str  # "added" or "changed"
+    how: str  # "added", "changed" or "unchanged"
     sha256: str | None  # a regular file's hash, or None for a link
     link_target: str | None = None  # a link's target (pam_unix_acct.so -> pam_unix.so)
 
@@ -235,6 +235,8 @@ def _check(
     result["newest_seen"] = newest
     result["older_than_seen"] = _older(system_id, version, newest) if newest else None
     official = package(Lookup(system_id, release, owner["package"], version, arch))
+    if official.cached:
+        result["cached"] = True  # answered from this machine's cache, no download
     if not official.found:
         return dict(
             result, outcome="not_checked", reason=official.reason, transient=official.transient
@@ -363,9 +365,15 @@ def stored_is_current(
     """Whether stored results stand: made against this baseline, and (when
     a verifier is at hand, `retrying`) with nothing that failed on this
     machine's side and is worth asking again."""
+    version = stored.get("version") if isinstance(stored, dict) else None
+    # A report rebuilt without a verifier keeps the results of an earlier
+    # version (they judged the changed modules the same way); with one, only
+    # the current version stands.
+    usable = version == OFFICIAL_VERSION or (
+        not retrying and isinstance(version, int) and 2 <= version < OFFICIAL_VERSION
+    )
     if not (
-        isinstance(stored, dict)
-        and stored.get("version") == OFFICIAL_VERSION
+        usable
         and stored.get("baseline_id") == baseline_id
         and isinstance(stored.get("files"), dict)
     ):
@@ -377,11 +385,12 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Counts by outcome, and the reasons for what wasn't checked."""
     counts: dict[str, int] = {}
     reasons: dict[str, int] = {}
-    owner_unknown = transient = 0
+    owner_unknown = transient = downloaded = 0
     unchanged: dict[str, int] = {}
     for result in ((stored or {}).get("files") or {}).values():
         outcome = result.get("outcome", "not_checked")
         transient += bool(result.get("transient"))
+        downloaded += outcome != "not_checked" and not result.get("cached")
         if result.get("how") == "unchanged":
             # Every module is checked (V.7); the counts and reasons stay the
             # changed ones', and the unchanged are counted apart.
@@ -398,6 +407,7 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
         "baseline_owner_unknown": owner_unknown,
         "transient": transient,
         "unchanged": unchanged,
+        "downloaded": downloaded,
     }
 
 
@@ -406,11 +416,9 @@ def unreachable(assessment: dict[str, Any] | None) -> bool:
     reach: something failed on this machine's side and nothing was checked.
     A run then stops asking for its other hosts (they are checked next run)."""
     found = (assessment or {}).get("official_files") or {}
-    counts = {**(found.get("unchanged") or {})}
-    for outcome, n in (found.get("counts") or {}).items():
-        counts[outcome] = counts.get(outcome, 0) + n
-    checked = sum(n for outcome, n in counts.items() if outcome != "not_checked")
-    return bool(found.get("transient")) and not checked
+    # Answers from the cache need no network, so only what was downloaded
+    # shows the servers in reach.
+    return bool(found.get("transient")) and not found.get("downloaded")
 
 
 class _NoDownloads:

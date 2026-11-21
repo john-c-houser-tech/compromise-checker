@@ -731,9 +731,34 @@ def test_results_are_cached_and_a_damaged_cache_is_ignored(pinned, tmp_path):
 
 
 @needs_gpgv
-def test_nothing_is_cached_when_nothing_was_found(pinned, tmp_path):
-    Verifier(tmp_path, fetcher=Site()).package(ROCKY)
-    assert list(tmp_path.iterdir()) == []
+def test_a_package_not_found_is_not_asked_about_again_for_a_day(pinned, tmp_path, monkeypatch):
+    site = Site()
+    Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert not list(tmp_path.glob("*.json"))  # no result: only a marker that it wasn't there
+    assert len(list(tmp_path.glob("*.missing"))) == 1
+    asked = len(site.asked)
+    again = Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert not again.found and again.cached and len(site.asked) == asked
+    import checker.verify as verify
+
+    monkeypatch.setattr(verify, "MISSING_FOR", -1)  # a day later
+    Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert len(site.asked) > asked
+    # A failure on this machine's side is never remembered.
+    site.down = True
+    (next(tmp_path.glob("*.missing"))).unlink()
+    Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert not list(tmp_path.glob("*.missing"))
+
+
+@needs_gpgv
+def test_launchpad_isn_t_asked_about_a_package_ubuntu_doesn_t_have(pinned):
+    site = Site()
+    site.ubuntu(pinned, ARCHIVE, "noble-updates", [("libpam-modules", NOBLE.version, PAM)])
+    vendor = Lookup("ubuntu", "24.04", "duo-unix", "2.0.3", "amd64")
+    official = ubuntu_verifier(site, ubuntu_snapshot=SNAP, launchpad=LP).package(vendor)
+    assert "isn't one of Ubuntu's packages" in official.reason
+    assert not any(u.startswith(LP) or u.startswith(SNAP) for u in site.asked)
 
 
 def test_reasons_when_it_cant_check(monkeypatch):

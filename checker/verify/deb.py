@@ -256,6 +256,11 @@ class Ubuntu:
         problems: list[str] = []
         suites = [codename + "-security", codename + "-updates", codename]
         hit = self._find([(self.archive, suites)], package, version, arch, lists_arch, problems)
+        if hit is None and not problems and not self._listed(package):
+            # In none of the current lists under any version (a vendor's or a
+            # PPA's package): Launchpad and the dated copies aren't asked,
+            # so its name isn't sent there.
+            raise PackageError(f"{show(package)} isn't one of Ubuntu's packages")
         if hit is None and self.snapshot:
             copies = self._copies(codename, package, version, lists_arch)
             hit = self._find(copies, package, version, arch, lists_arch, problems)
@@ -296,6 +301,13 @@ class Ubuntu:
                     if entry is not None:
                         return base, entry, signer
         return None
+
+    def _listed(self, package: str) -> bool:
+        """Whether any list loaded this run names the package, at any version."""
+        for listed in self._lists.values():
+            if listed and any(key[0] == package for key in listed[0]):
+                return True
+        return False
 
     def _list(self, base, suite, component, arch):
         key = (base, suite, f"{component}/{arch}")

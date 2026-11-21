@@ -831,3 +831,53 @@ def test_analyze_catches_a_swapped_module_at_the_first_collection(home):
     assert [(f["band"], f["variant"]) for f in pam] == [("high", "differs")]
     assert first["official_files"]["unchanged"] == {"differs": 1}
     assert not any("weren't checked" in n or "couldn't be checked" in n for n in first["notes"])
+
+
+# --- From #216's reviews ----------------------------------------------------------------------
+
+
+def test_cache_hits_don_t_hide_servers_out_of_reach():
+    summary = {"counts": {"not_checked": 46}, "unchanged": {"matched": 5}, "transient": 46,
+               "downloaded": 0}  # fmt: skip
+    assert official.unreachable({"official_files": summary})
+    assert not official.unreachable({"official_files": dict(summary, downloaded=1)})
+
+    class Cached(FakeVerifier):
+        def package(self, lookup):
+            found = super().package(lookup)
+            found.cached = True
+            return found
+
+    results = check(BEFORE, AFTER, Cached({UNIX: {"sha256": BAD}}))
+    assert results["files"][UNIX]["cached"] is True
+    assert official.summary(results)["downloaded"] == 0
+
+
+def test_a_swapped_module_whose_mode_changed_is_reported_once():
+    trojan = {"sha256": BAD, "mode": "0644", "uid": 0}
+    before = dict(BEFORE, pam={**BEFORE["pam"], OTHER: trojan},
+                  owners={**BEFORE["owners"], OTHER: owner()})  # fmt: skip
+    after = dict(AFTER, pam={**AFTER["pam"], OTHER: dict(trojan, mode="0666")},
+                 owners={**AFTER["owners"], OTHER: owner()})  # fmt: skip
+    found = pam_findings(
+        before, after, FakeVerifier({UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}})
+    )
+    assert len([f for f in found if OTHER in f.summary]) == 1
+
+
+def test_a_rebuilt_report_keeps_results_from_an_earlier_version():
+    older = {"version": 2, "baseline_id": "b0", "files": {}}
+    assert official.stored_is_current(older, "b0")  # no verifier: kept
+    assert not official.stored_is_current(older, "b0", retrying=True)  # with one: checked again
+    assert not official.stored_is_current(dict(older, version=1), "b0")
+
+
+def test_the_baseline_itself_isn_t_called_a_first_check():
+    from checker.checks import Context, run_checks
+
+    current = snap(**dict(BEFORE, pam={UNIX: {"sha256": BAD}}))
+    results = official.verify_pam(current, None, None, FakeVerifier({UNIX: {"sha256": GOOD}}), "b1")
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1",
+                      official=results, no_baseline="this bundle is the baseline")  # fmt: skip
+    pam = [f for f in run_checks(context)[0] if f.check == "pam.changes"]
+    assert "found without a comparison with the baseline" in pam[0].summary

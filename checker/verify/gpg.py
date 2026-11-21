@@ -64,10 +64,18 @@ def gpgv_path() -> str | None:
 
 def _run(names, args: list[str], files: dict[str, bytes]) -> tuple[str, bytes | None]:
     """gpgv's status lines (and --output's bytes, if asked) for `files`
-    written into a private folder; `args` name those files."""
+    written into a private folder; `args` name those files. The bytes are
+    None unless gpgv itself said yes (exit status 0)."""
     gpgv = gpgv_path()
     if gpgv is None:
         raise SignatureError("gpgv isn't installed on this machine")
+    try:
+        return _run_in(gpgv, names, args, files)
+    except OSError as exc:
+        raise SignatureError(f"gpgv couldn't be run: {exc.strerror or exc}") from None
+
+
+def _run_in(gpgv, names, args, files):
     with tempfile.TemporaryDirectory(prefix="checker-gpgv-") as home:
         os.chmod(home, 0o700)
         keyring = os.path.join(home, "pinned.gpg")
@@ -77,23 +85,32 @@ def _run(names, args: list[str], files: dict[str, bytes]) -> tuple[str, bytes | 
             with open(os.path.join(home, name), "wb") as handle:
                 handle.write(data)
         output = os.path.join(home, "signed.out")
-        argv = [gpgv, "--status-fd", "1", "--keyring", keyring]
-        argv += [a.replace("{out}", output) for a in args]
-        try:
-            done = subprocess.run(  # noqa: S603 - fixed program and arguments
-                argv,
-                cwd=home,
-                capture_output=True,
-                timeout=TIMEOUT,
-                env={"GNUPGHOME": home, "LC_ALL": "C", "PATH": os.environ.get("PATH", "")},
-            )
-        except subprocess.TimeoutExpired:
-            raise SignatureError("gpgv took too long") from None
-        signed = None
+        # Status lines go to a file of their own, so nothing else gpgv
+        # prints (a signed message's text, say) can be read as status.
+        with open(os.path.join(home, "status"), "w+b") as status:
+            argv = [gpgv, "--status-fd", str(status.fileno()), "--keyring", keyring]
+            argv += ["--weak-digest", "SHA1"]
+            argv += [a.replace("{out}", output) for a in args]
+            try:
+                done = subprocess.run(  # noqa: S603 - fixed program and arguments
+                    argv,
+                    cwd=home,
+                    capture_output=True,
+                    timeout=TIMEOUT,
+                    pass_fds=(status.fileno(),),
+                    env={"GNUPGHOME": home, "LC_ALL": "C", "PATH": os.environ.get("PATH", "")},
+                )
+            except subprocess.TimeoutExpired:
+                raise SignatureError("gpgv took too long") from None
+            status.seek(0)
+            lines = status.read(1024 * 1024).decode("utf-8", "replace")
+        if done.returncode != 0:
+            return lines, None
+        signed = b""
         if os.path.exists(output):
             with open(output, "rb") as handle:
                 signed = handle.read(MAX_SIGNED + 1)
-        return done.stdout.decode("utf-8", "replace"), signed if done.returncode == 0 else None
+        return lines, signed
 
 
 def _signer(status: str, names) -> str:
@@ -132,7 +149,7 @@ def verify_clearsigned(data: bytes, names) -> tuple[bytes, str]:
         raise SignatureError("more than one signed block")
     status, signed = _run(names, ["--output", "{out}", "in.txt"], {"in.txt": data})
     signer = _signer(status, names)
-    if signed is None or len(signed) > MAX_SIGNED:
+    if not signed or len(signed) > MAX_SIGNED:
         raise SignatureError("gpgv gave no signed text")
     return signed, signer
 
@@ -140,5 +157,10 @@ def verify_clearsigned(data: bytes, names) -> tuple[bytes, str]:
 def verify_detached(signature: bytes, data: bytes, names) -> str:
     """The signer's fingerprint, if `signature` is a valid detached
     signature of `data` by one of the pinned keys `names`."""
-    status, _ = _run(names, ["sig.bin", "data.bin"], {"sig.bin": signature, "data.bin": data})
-    return _signer(status, names)
+    status, said_yes = _run(
+        names, ["sig.bin", "data.bin"], {"sig.bin": signature, "data.bin": data}
+    )
+    signer = _signer(status, names)
+    if said_yes is None:
+        raise SignatureError("gpgv didn't accept the signature")
+    return signer

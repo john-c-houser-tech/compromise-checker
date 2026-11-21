@@ -20,12 +20,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from checker.verify import deb, gpg, rpm
 from checker.verify.fetch import Fetcher, FetchError, HttpFetcher
+from checker.verify.words import show
 
 CACHE_FORMAT = 1
 
@@ -33,7 +35,13 @@ CACHE_FORMAT = 1
 @dataclass(frozen=True)
 class Lookup:
     """What the server says: os-release's ID and VERSION_ID, the package,
-    its version (rpm: [epoch:]version-release) and architecture."""
+    its version (rpm: [epoch:]version-release) and the package's own
+    architecture (amd64 or all; x86_64 or noarch).
+
+    Every field is the server's claim. A match proves only that the file
+    is the distribution's genuine file for the package and version given
+    here, so the caller has to hold system, release and architecture to
+    what an earlier collection saw (plan, V.4/V.5)."""
 
     system: str
     release: str
@@ -112,6 +120,12 @@ class Verifier:
         self.rpm = rpm.Rpm(self.fetcher, rpm_mirrors)
 
     def package(self, lookup: Lookup) -> Official:
+        try:
+            return self._package(lookup)
+        except Exception as exc:  # noqa: BLE001 - the contract: a reason, never an error
+            return Official(lookup, reason=f"couldn't check it: {type(exc).__name__}: {exc}"[:300])
+
+    def _package(self, lookup: Lookup) -> Official:
         cached = self._cached(lookup)
         if cached is not None:
             return cached
@@ -129,7 +143,7 @@ class Verifier:
             elif lookup.system == "rhel":
                 return Official(lookup, reason="Red Hat's packages need a subscription to download")
             else:
-                return Official(lookup, reason=f"{lookup.system} isn't covered")
+                return Official(lookup, reason=f"{show(lookup.system)} isn't covered")
         except (deb.PackageError, rpm.PackageError) as exc:
             return Official(lookup, reason=str(exc))
         except FetchError as exc:
@@ -146,21 +160,39 @@ class Verifier:
         key = json.dumps(asdict(lookup), sort_keys=True).encode()
         return self.cache_dir / f"{hashlib.sha256(key).hexdigest()}.json"
 
+    def _safe_folder(self) -> bool:
+        """The cache folder is this user's and no one else can write to it:
+        an entry there is believed without checking a signature again."""
+        try:
+            info = os.lstat(self.cache_dir)
+        except (OSError, TypeError):
+            return False
+        return (
+            stat.S_ISDIR(info.st_mode)
+            and info.st_uid == os.getuid()
+            and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        )
+
     def _cached(self, lookup: Lookup) -> Official | None:
         path = self._path(lookup)
-        if path is None or not path.is_file():
+        if path is None or not self._safe_folder():
             return None
         try:
+            if not os.path.isfile(path):
+                return None
             data = json.loads(path.read_text())
             if data.get("format") != CACHE_FORMAT or data.get("lookup") != asdict(lookup):
                 return None
+            signer = str(data["signer"])
+            if signer not in pinned_for(lookup.system, lookup.release):
+                return None  # a key no longer pinned for this system: fetch again
             files = data["files"]
             if not isinstance(files, dict) or not all(
                 isinstance(v, dict) and set(v) in ({"sha256"}, {"link"}) for v in files.values()
             ):
                 return None
-            return Official(lookup, files, str(data["source"]), str(data["signer"]), cached=True)
-        except (OSError, ValueError, KeyError, TypeError):
+            return Official(lookup, files, str(data["source"]), signer, cached=True)
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
             return None
 
     def _keep(self, official: Official) -> None:
@@ -174,11 +206,30 @@ class Verifier:
             "source": official.source,
             "signer": official.signer,
         }
+        temporary = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not self._safe_folder():
+                return
             handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".part-")
             with os.fdopen(handle, "w") as out:
                 json.dump(data, out)
             os.replace(temporary, path)
+            temporary = None
         except OSError:
             pass  # a cache that can't be written only costs a download next time
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+
+
+def pinned_for(system: str, release: str) -> set[str]:
+    """The fingerprints a result for this system and release may be signed by."""
+    if system == "ubuntu":
+        names = deb.KEYS
+    else:
+        names = rpm.SYSTEMS.get(system, {}).get("keys", {}).get(release.split(".")[0], ())
+    return {gpg.KEYS[name][0] for name in names if name in gpg.KEYS}

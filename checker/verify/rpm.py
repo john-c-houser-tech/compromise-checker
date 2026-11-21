@@ -20,6 +20,7 @@ import struct
 
 from checker.verify import gpg
 from checker.verify.fetch import Fetcher
+from checker.verify.words import show
 
 SYSTEMS = {
     "rocky": {
@@ -38,6 +39,7 @@ SYSTEMS = {
     },
 }
 REPOS = ("BaseOS", "AppStream")
+MIRROR_FIELDS = ("current", "vault", "vault_list")
 ARCHES = ("x86_64", "noarch")
 
 LEAD = 96
@@ -49,7 +51,8 @@ MAX_LISTING = 1024 * 1024
 # Header tags (rpmtag.h)
 SIG_RSA = 268
 NAME, VERSION, RELEASE, EPOCH, ARCH = 1000, 1001, 1002, 1003, 1022
-FILEMODES, FILEDIGESTS, FILELINKTOS = 1030, 1035, 1036
+FILEMODES, FILEDIGESTS, FILELINKTOS, FILEFLAGS = 1030, 1035, 1036, 1037
+GHOST = 64  # RPMFILE_GHOST: listed but not shipped, so no digest
 DIRINDEXES, BASENAMES, DIRNAMES = 1116, 1117, 1118
 FILEDIGESTALGO = 5011
 SHA256 = 8
@@ -149,25 +152,29 @@ def needed_bytes(data: bytes) -> int:
 
 def header_files(main: Header) -> dict[str, dict]:
     """{absolute path: {"sha256": hex} or {"link": target}} from the header."""
-    if (main.ints(FILEDIGESTALGO) or [0])[0] != SHA256:
-        raise PackageError("the package's file digests aren't SHA-256")
     bases = main.strings(BASENAMES) or []
     if not bases:
         return {}
+    if (main.ints(FILEDIGESTALGO) or [0])[0] != SHA256:
+        raise PackageError("the package's file digests aren't SHA-256")
     dirs = main.strings(DIRNAMES) or []
     indexes = main.ints(DIRINDEXES) or []
     modes = main.ints(FILEMODES) or []
     digests = main.strings(FILEDIGESTS) or []
     links = main.strings(FILELINKTOS) or []
-    if not (len(bases) == len(indexes) == len(modes) == len(digests) == len(links)):
+    flags = main.ints(FILEFLAGS) or [0] * len(bases)
+    lists = (indexes, modes, digests, links, flags)
+    if any(len(values) != len(bases) for values in lists):
         raise PackageError("the package's file lists don't agree")
     files = {}
-    for base, index, mode, digest, link in zip(bases, indexes, modes, digests, links, strict=True):
+    for base, index, mode, digest, link, flag in zip(bases, *lists, strict=True):
         if index >= len(dirs) or "/" in base or base in ("", ".", ".."):
             raise PackageError("a broken file entry in the package")
         path = dirs[index] + base
         if not path.startswith("/") or "/../" in path + "/":
             raise PackageError(f"an odd path in the package: {path[:200]}")
+        if flag & GHOST:
+            continue  # listed, not shipped: whatever is there was made on the server
         if stat.S_ISREG(mode):
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
                 raise PackageError(f"a file without a SHA-256 in the package: {path[:200]}")
@@ -221,7 +228,12 @@ class Rpm:
 
     def __init__(self, fetcher: Fetcher, mirrors: dict[str, dict] | None = None):
         self.fetcher = fetcher
-        self.systems = {k: dict(v, **(mirrors or {}).get(k, {})) for k, v in SYSTEMS.items()}
+        self.systems = {}
+        for name, config in SYSTEMS.items():
+            given = (mirrors or {}).get(name, {})
+            # A mirror setting changes addresses only: never the keys or the layout.
+            urls = {k: v for k, v in given.items() if k in MIRROR_FIELDS and isinstance(v, str)}
+            self.systems[name] = dict(config, **urls)
         self._minors: dict[str, list[str]] = {}
 
     def files(self, system: str, release: str, package: str, evr: str, arch: str):
@@ -229,9 +241,9 @@ class Rpm:
         config = self.systems.get(system)
         major = release.split(".")[0]
         if config is None or major not in config["keys"]:
-            raise PackageError(f"{system} {release} isn't covered")
+            raise PackageError(f"{show(system)} {show(release)} isn't covered")
         if arch not in ARCHES:
-            raise PackageError(f"{arch} isn't covered yet")
+            raise PackageError(f"{show(arch)} isn't covered yet")
         for part in (package, evr, arch):
             if not _SAFE.fullmatch(part.replace(":", "")):
                 raise PackageError("an odd package name or version")

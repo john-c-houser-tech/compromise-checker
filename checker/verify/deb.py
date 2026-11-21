@@ -20,11 +20,13 @@ import lzma
 import posixpath
 import tarfile
 import urllib.parse
+import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from checker.verify import gpg
 from checker.verify.fetch import Fetcher
+from checker.verify.words import show
 
 try:  # Python 3.14 has zstd; before it, the backport (same interface)
     from compression import zstd
@@ -35,7 +37,7 @@ KEYS = ("ubuntu-2018",)
 CODENAMES = {"22.04": "jammy", "24.04": "noble", "26.04": "resolute"}
 ARCHES = ("amd64",)  # arm64 (ports.ubuntu.com) isn't covered yet
 COMPONENTS = ("main", "universe")
-ARCHIVE = "http://archive.ubuntu.com/ubuntu"
+ARCHIVE = "https://archive.ubuntu.com/ubuntu"
 SNAPSHOT = "https://snapshot.ubuntu.com/ubuntu"
 SNAPSHOTS_FROM = datetime(2023, 3, 1, tzinfo=UTC)  # the first dated copies (V.1)
 LAUNCHPAD = "https://api.launchpad.net/1.0"
@@ -45,6 +47,7 @@ MAX_INRELEASE = 4 * 1024 * 1024
 MAX_INDEX = 64 * 1024 * 1024  # a compressed Packages file
 MAX_INDEX_TEXT = 512 * 1024 * 1024
 MAX_DEB = 64 * 1024 * 1024
+MAX_COPIES = 6  # dated copies tried for one version
 MAX_DATA = 512 * 1024 * 1024  # a .deb's unpacked data archive
 MAX_LAUNCHPAD = 4 * 1024 * 1024
 
@@ -83,16 +86,20 @@ def decompress(data: bytes, name: str, cap: int) -> bytes:
         engine = zstd.ZstdDecompressor()
     elif name.endswith(".xz"):
         engine = lzma.LZMADecompressor()
+    elif name.endswith(".gz"):
+        engine = zlib.decompressobj(16 + zlib.MAX_WBITS)
     elif name.endswith(".tar") or name == "data.tar":
         return data if len(data) <= cap else _too_large(name)
     else:
         raise PackageError(f"unsupported compression: {name}")
     try:
         out = engine.decompress(data, max_length=cap)
-    except (lzma.LZMAError, zstd.ZstdError) as exc:
+    except (lzma.LZMAError, zstd.ZstdError, zlib.error) as exc:
         raise PackageError(f"{name} doesn't unpack: {exc}") from None
     if not engine.eof:
         _too_large(name)
+    if engine.unused_data:
+        raise PackageError(f"{name} has more after its end")  # never silently cut short
     return out
 
 
@@ -217,23 +224,29 @@ class Ubuntu:
         self.launchpad = launchpad.rstrip("/") if launchpad else None
         self.now = now or datetime.now(UTC)
         self._lists: dict[tuple[str, str, str], dict | None] = {}
+        self._releases: dict[tuple[str, str], tuple | None] = {}  # verified InRelease
 
     def files(self, release: str, package: str, version: str, arch: str):
-        """(files, source address, signer) for the package, or PackageError."""
+        """(files, source address, signer) for the package, or PackageError.
+        `arch` is the package's own architecture: amd64, or all."""
         codename = CODENAMES.get(release)
         if codename is None:
-            raise PackageError(f"Ubuntu {release} isn't covered")
-        if arch not in ARCHES:
-            raise PackageError(f"{arch} isn't covered yet")
+            raise PackageError(f"Ubuntu {show(release)} isn't covered")
+        if arch not in ARCHES + ("all",):
+            raise PackageError(f"{show(arch)} isn't covered yet")
+        lists_arch = "amd64" if arch == "all" else arch  # "all" packages are in each list
+        problems: list[str] = []
         suites = [codename + "-security", codename + "-updates", codename]
-        hit = self._find([self.archive], suites, package, version, arch)
+        hit = self._find([(self.archive, suites)], package, version, arch, lists_arch, problems)
         if hit is None and self.snapshot:
-            hit = self._find(
-                self._copies(codename, package, version, arch), None, package, version, arch
-            )
+            copies = self._copies(codename, package, version, lists_arch)
+            hit = self._find(copies, package, version, arch, lists_arch, problems)
         if hit is None:
-            raise PackageError(f"{package} {version} isn't in Ubuntu's archive")
+            why = f" ({problems[0]})" if problems else ""
+            raise PackageError(f"{show(package)} {show(version)} isn't in Ubuntu's archive{why}")
         base, entry, signer = hit
+        if entry.size > MAX_DEB:
+            raise PackageError(f"{entry.filename} is larger than the limit")
         deb = self.fetcher.get(f"{base}/{entry.filename}", MAX_DEB)
         if deb is None:
             raise PackageError(f"{entry.filename} is listed but not there")
@@ -241,19 +254,23 @@ class Ubuntu:
             raise PackageError(f"{entry.filename} doesn't match the signed list")
         return deb_files(deb), f"{base}/{entry.filename}", signer
 
-    def _find(self, bases, suites, package, version, arch):
-        """The first signed list holding the package: (base, Entry, signer)."""
-        for item in bases:
-            base, suite_list = (item, suites) if suites else item
-            for suite in suite_list:
-                for component in COMPONENTS:
-                    listed = self._list(base, suite, component, arch)
+    def _find(self, places, package, version, arch, lists_arch, problems):
+        """The first signed list holding the package: (base, Entry, signer).
+        `main` in every place before `universe` (most of what is asked
+        about is in main, and universe's lists are large). A list that
+        can't be checked is skipped, its problem kept for the reason."""
+        for component in COMPONENTS:
+            for base, suites in places:
+                for suite in suites:
+                    try:
+                        listed = self._list(base, suite, component, lists_arch)
+                    except PackageError as exc:
+                        problems.append(str(exc))
+                        continue
                     if not listed:
                         continue
                     entries, signer = listed
-                    entry = entries.get((package, version, arch)) or entries.get(
-                        (package, version, "all")
-                    )
+                    entry = entries.get((package, version, arch))
                     if entry is not None:
                         return base, entry, signer
         return None
@@ -261,23 +278,43 @@ class Ubuntu:
     def _list(self, base, suite, component, arch):
         key = (base, suite, f"{component}/{arch}")
         if key not in self._lists:
-            self._lists[key] = self._load(base, suite, component, arch)
+            try:
+                self._lists[key] = self._load(base, suite, component, arch)
+            except PackageError:
+                self._lists[key] = None  # don't ask again this run
+                raise
         return self._lists[key]
 
+    def _release(self, base, suite):
+        """(index hashes, signer) of the suite's verified InRelease, once a run."""
+        key = (base, suite)
+        if key not in self._releases:
+            self._releases[key] = None
+            release = self.fetcher.get(f"{base}/dists/{suite}/InRelease", MAX_INRELEASE)
+            if release is None:
+                return None
+            try:
+                signed, signer = gpg.verify_clearsigned(release, KEYS)
+            except gpg.SignatureError as exc:
+                raise PackageError(f"{base}/dists/{suite}/InRelease: {exc}") from None
+            self._releases[key] = (release_hashes(signed, suite), signer)
+        return self._releases[key]
+
     def _load(self, base, suite, component, arch):
-        release = self.fetcher.get(f"{base}/dists/{suite}/InRelease", MAX_INRELEASE)
-        if release is None:
+        verified = self._release(base, suite)
+        if verified is None:
             return None
-        try:
-            signed, signer = gpg.verify_clearsigned(release, KEYS)
-        except gpg.SignatureError as exc:
-            raise PackageError(f"{base}/dists/{suite}/InRelease: {exc}") from None
-        hashes = release_hashes(signed, suite)
+        hashes, signer = verified
         name = f"{component}/binary-{arch}/Packages.xz"
         if name not in hashes:
             return None
         digest, size = hashes[name]
-        data = self.fetcher.get(f"{base}/dists/{suite}/{name}", MAX_INDEX)
+        # By hash first: a mirror part-way through an update still serves
+        # the file this InRelease names under its hash.
+        folder = f"{base}/dists/{suite}/{component}/binary-{arch}"
+        data = self.fetcher.get(f"{folder}/by-hash/SHA256/{digest}", MAX_INDEX)
+        if data is None:
+            data = self.fetcher.get(f"{base}/dists/{suite}/{name}", MAX_INDEX)
         if data is None or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
             raise PackageError(f"{base}/dists/{suite}/{name} doesn't match the signed list")
         text = decompress(data, name, MAX_INDEX_TEXT).decode("utf-8", "replace")
@@ -301,7 +338,7 @@ class Ubuntu:
         raw = self.fetcher.get(f"{self.launchpad}/ubuntu/+archive/primary?{query}", MAX_LAUNCHPAD)
         try:
             entries = json.loads(raw or b"{}").get("entries", [])
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, RecursionError):
             return []
         copies = []
         for item in entries if isinstance(entries, list) else []:
@@ -312,7 +349,7 @@ class Ubuntu:
             base = f"{self.snapshot}/{when.strftime('%Y%m%dT%H%M%SZ')}"
             if (base, [suite]) not in copies:
                 copies.append((base, [suite]))
-        return copies[:6]
+        return copies[:MAX_COPIES]
 
 
 def copy_time(item, version: str, now: datetime) -> datetime | None:
@@ -327,6 +364,8 @@ def copy_time(item, version: str, now: datetime) -> datetime | None:
     if published is None:
         return None
     ended = _when(item.get("date_superseded")) or _when(item.get("date_removed")) or now
+    if ended <= SNAPSHOTS_FROM:
+        return None
     when = min(ended, now) - timedelta(minutes=1)
     if when <= published or when < SNAPSHOTS_FROM:
         return None

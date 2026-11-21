@@ -160,9 +160,9 @@ def make_ar(members: dict[str, bytes]) -> bytes:
 
 def packages_text(entries) -> bytes:
     stanzas = []
-    for package, version, filename, data in entries:
+    for package, version, filename, data, arch in entries:
         stanzas.append(
-            f"Package: {package}\nVersion: {version}\nArchitecture: amd64\n"
+            f"Package: {package}\nVersion: {version}\nArchitecture: {arch}\n"
             f"Filename: {filename}\nSize: {len(data)}\nSHA256: {sha(data)}\n"
         )
     return "\n".join(stanzas).encode()
@@ -191,16 +191,17 @@ class Site:
             return None
         return data[:first] if first is not None else data
 
-    def ubuntu(self, keys, base, suite, debs, key="good", inrelease=None):
-        """Publish `debs` [(package, version, {path: bytes})] in a signed suite."""
+    def ubuntu(self, keys, base, suite, debs, key="good", inrelease=None, component="main"):
+        """Publish `debs` [(package, version, {path: bytes}[, arch])] in a signed suite."""
         entries = []
-        for package, version, files in debs:
+        for package, version, files, *rest in debs:
+            arch = rest[0] if rest else "amd64"
             data = make_deb(files)
-            filename = f"pool/main/{package[0]}/{package}/{package}_{version}_amd64.deb"
+            filename = f"pool/{component}/{package[0]}/{package}/{package}_{version}_{arch}.deb"
             self.files[f"{base}/{filename}"] = data
-            entries.append((package, version, filename, data))
+            entries.append((package, version, filename, data, arch))
         index = lzma.compress(packages_text(entries))
-        name = "main/binary-amd64/Packages.xz"
+        name = f"{component}/binary-amd64/Packages.xz"
         self.files[f"{base}/dists/{suite}/{name}"] = index
         text = inrelease if inrelease is not None else inrelease_text(suite, {name: index})
         self.files[f"{base}/dists/{suite}/InRelease"] = keys.clearsign(text, key)
@@ -243,8 +244,12 @@ def make_rpm(
     algo=8,
     key="good",
     pad=0,
+    epoch=None,
+    ghosts=(),
 ) -> bytes:
-    files = files if files is not None else {RPM_UNIX: UNIX_BYTES}
+    """`files` {path: bytes}; `ghosts` paths listed with no digest (%ghost)."""
+    files = dict(files if files is not None else {RPM_UNIX: UNIX_BYTES})
+    files.update({g: None for g in ghosts})
     paths = sorted(files)
     dirs = sorted({p.rsplit("/", 1)[0] + "/" for p in paths})
     main = header(
@@ -259,7 +264,18 @@ def make_rpm(
                 struct.pack(f">{len(paths)}H", *[0o100755] * len(paths)),
                 len(paths),
             ),
-            (rpm.FILEDIGESTS, 8, strs(*[sha(files[p]) for p in paths]), len(paths)),
+            (
+                rpm.FILEDIGESTS,
+                8,
+                strs(*[sha(files[p]) if files[p] is not None else "" for p in paths]),
+                len(paths),
+            ),
+            (
+                rpm.FILEFLAGS,
+                4,
+                struct.pack(f">{len(paths)}I", *[rpm.GHOST if p in ghosts else 0 for p in paths]),
+                len(paths),
+            ),
             (rpm.FILELINKTOS, 8, strs(*[""] * len(paths)), len(paths)),
             (
                 rpm.DIRINDEXES,
@@ -274,6 +290,7 @@ def make_rpm(
             (rpm.FILEDIGESTALGO, 4, struct.pack(">I", algo), 1),
             (99999, 7, b"\0" * pad, pad),
         ]
+        + ([(rpm.EPOCH, 4, struct.pack(">I", epoch), 1)] if epoch is not None else [])
     )
     signed = keys.detach(main, key)
     signature = header([(rpm.SIG_RSA, 7, signed, len(signed))])
@@ -700,8 +717,17 @@ def test_results_are_cached_and_a_damaged_cache_is_ignored(pinned, tmp_path):
     again = Verifier(tmp_path, fetcher=site).package(ROCKY)
     assert again.cached and again.files == first.files
     (entry,) = tmp_path.glob("*.json")
-    entry.write_text('{"format": 1, "lookup": {}, "files": "x"}')
+    good = json.loads(entry.read_text())
+    entry.write_text(json.dumps(dict(good, files="x")))
     assert not Verifier(tmp_path, fetcher=site).package(ROCKY).found
+    entry.write_text(json.dumps(dict(good, signer=pinned.fpr["other"])))
+    assert not Verifier(tmp_path, fetcher=site).package(ROCKY).found  # not pinned for Rocky 9
+    entry.write_text(json.dumps(good))
+    tmp_path.chmod(0o770)  # others could write it: not believed
+    try:
+        assert not Verifier(tmp_path, fetcher=site).package(ROCKY).found
+    finally:
+        tmp_path.chmod(0o700)
 
 
 @needs_gpgv
@@ -780,3 +806,265 @@ def test_fetcher(web):
         fetcher.get("file:///etc/passwd", 100)
     with pytest.raises(FetchError, match="out of time"):
         HttpFetcher(deadline=0).get(f"{web}/file", 100)
+
+
+# === From the PR #210 reviews ===========================================================
+
+
+@needs_gpgv
+def test_rpm_ghost_files_are_skipped_not_refused(pinned):
+    """%ghost files (sssd-client's, say) have no digest: listed, not shipped."""
+    site = Site()
+    url = ROCKY_URL.replace("/p/", "/s/") + "sssd-client-2.9.9-3.el9.x86_64.rpm"
+    pam_sss = "/usr/lib64/security/pam_sss.so"
+    site.files[url] = make_rpm(
+        pinned,
+        name="sssd-client",
+        version="2.9.9",
+        release="3.el9",
+        files={pam_sss: b"sss"},
+        ghosts=("/etc/cifs-utils/idmap-plugin",),
+    )
+    official = Verifier(None, fetcher=site).package(
+        Lookup("rocky", "9", "sssd-client", "2.9.9-3.el9", "x86_64")
+    )
+    assert official.found, official.reason
+    assert "/etc/cifs-utils/idmap-plugin" not in official.files
+    assert compare(official, pam_sss, sha(b"sss"), {}) == "matched"
+
+
+@needs_gpgv
+def test_rpm_epoch_noarch_and_appstream(pinned):
+    site = Site()
+    appstream = "https://dl.rockylinux.org/pub/rocky/9/AppStream/x86_64/os/Packages/s/"
+    site.files[appstream + "shadow-utils-4.9-17.el9.noarch.rpm"] = make_rpm(
+        pinned, name="shadow-utils", version="4.9", release="17.el9", arch="noarch", epoch=2
+    )
+    verifier = Verifier(None, fetcher=site)
+    good = Lookup("rocky", "9", "shadow-utils", "2:4.9-17.el9", "noarch")
+    assert verifier.package(good).found
+    wrong_epoch = Lookup("rocky", "9", "shadow-utils", "1:4.9-17.el9", "noarch")
+    assert "header is for" in verifier.package(wrong_epoch).reason
+    no_epoch = Lookup("rocky", "9", "shadow-utils", "4.9-17.el9", "noarch")
+    assert "header is for" in verifier.package(no_epoch).reason
+
+
+def test_rpm_with_no_files_needs_no_digest_algorithm():
+    empty = header([(rpm.NAME, 6, strs("filesystem-meta"), 1)])
+    assert rpm.header_files(rpm.Header(empty, 0)) == {}
+
+
+def test_a_mirror_setting_changes_addresses_never_keys():
+    chosen = rpm.Rpm(Site(), {"rocky": {"keys": {"9": ("almalinux-9",)}, "current": "https://m/"}})
+    assert chosen.systems["rocky"]["keys"] == rpm.SYSTEMS["rocky"]["keys"]
+    assert chosen.systems["rocky"]["current"] == "https://m/"
+
+
+@needs_gpgv
+def test_ubuntu_all_arch_universe_and_by_hash(pinned):
+    site = Site()
+    site.ubuntu(pinned, ARCHIVE, "noble-updates", [("other", "1", {"/x": b"x"})])
+    site.ubuntu(
+        pinned, ARCHIVE, "noble", [("libpam-runtime", "1.5.3-5ubuntu5", {"/usr/x": b"r"}, "all")]
+    )
+    lookup = Lookup("ubuntu", "24.04", "libpam-runtime", "1.5.3-5ubuntu5", "all")
+    official = ubuntu_verifier(site).package(lookup)
+    assert official.found, official.reason
+    # universe, only after main everywhere
+    site2 = Site()
+    site2.ubuntu(
+        pinned,
+        ARCHIVE,
+        "noble-security",
+        [("libpam-yubico", "2.27", {"/y": b"y"})],
+        component="universe",
+    )
+    official = ubuntu_verifier(site2).package(
+        Lookup("ubuntu", "24.04", "libpam-yubico", "2.27", "amd64")
+    )
+    assert official.found, official.reason
+    asked = [u for u in site2.asked if u.endswith("InRelease")]
+    assert len(asked) == 3  # each suite's list fetched once, for both components
+    # the by-hash name is tried first
+    digest = sha(site.files[f"{ARCHIVE}/dists/noble/main/binary-amd64/Packages.xz"])
+    by_hash = f"{ARCHIVE}/dists/noble/main/binary-amd64/by-hash/SHA256/{digest}"
+    assert by_hash in site.asked
+
+
+@needs_gpgv
+def test_a_list_that_fails_is_skipped_and_named_in_the_reason(pinned):
+    site = Site()
+    site.ubuntu(pinned, ARCHIVE, "noble-security", [("other", "1", {"/x": b"x"})], key="other")
+    site.ubuntu(pinned, ARCHIVE, "noble-updates", [("libpam-modules", NOBLE.version, PAM)])
+    assert ubuntu_verifier(site).package(NOBLE).found
+    del site.files[f"{ARCHIVE}/dists/noble-updates/InRelease"]
+    official = ubuntu_verifier(site).package(NOBLE)
+    assert not official.found and "noble-security/InRelease" in official.reason
+
+
+def test_deb_hardlinks_gzip_and_trailing_data():
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tar:
+        info = tarfile.TarInfo("./usr/a")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"a"))
+        link = tarfile.TarInfo("./usr/b")
+        link.type, link.linkname = tarfile.LNKTYPE, "./usr/a"
+        tar.addfile(link)
+    import gzip
+
+    files = deb.deb_files(
+        make_ar({"debian-binary": b"2.0\n", "data.tar.gz": gzip.compress(raw.getvalue())})
+    )
+    assert files["/usr/b"] == files["/usr/a"] == {"sha256": sha(b"a")}
+    twice = zstd.compress(raw.getvalue()) + zstd.compress(b"more")
+    with pytest.raises(deb.PackageError, match="more after its end"):
+        deb.decompress(twice, "data.tar.zst", 10**6)
+
+
+@needs_gpgv
+def test_an_oversized_deb_is_refused_before_download(pinned, monkeypatch):
+    site = Site()
+    site.ubuntu(pinned, ARCHIVE, "noble-security", [("libpam-modules", NOBLE.version, PAM)])
+    monkeypatch.setattr(deb, "MAX_DEB", 10)
+    official = ubuntu_verifier(site).package(NOBLE)
+    assert "larger than the limit" in official.reason
+    assert not any(u.endswith(".deb") for u in site.asked)
+
+
+def test_package_never_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(gpg, "gpgv_path", lambda: "/usr/bin/gpgv")
+    verifier = Verifier(None, fetcher=Site())
+
+    def boom(*args):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(verifier.rpm, "files", boom)
+    assert "couldn't check it: RuntimeError" in verifier.package(ROCKY).reason
+    # Launchpad's odd answers are only hints that lead nowhere
+    item = {
+        "binary_package_version": "1",
+        "pocket": "Updates",
+        "date_published": "0001-01-01T00:00:00",
+        "date_superseded": "0001-01-01T00:00:00",
+    }
+    assert deb.copy_time(item, "1", datetime(2026, 1, 1, tzinfo=UTC)) is None
+    site = Site()
+    site.files[next_launchpad_url(Lookup("ubuntu", "24.04", "p", "1", "amd64"))] = (
+        b"[" * 100_000 + b"]" * 100_000
+    )
+    found = Ubuntu_copies(site)
+    assert found == []
+    # gpgv that can't be run
+    monkeypatch.setattr(gpg, "gpgv_path", lambda: str(tmp_path / "no-gpgv"))
+    with pytest.raises(gpg.SignatureError, match="couldn't be run"):
+        gpg.verify_detached(b"x", b"y", ("rocky-9",))
+    # a cache folder that can't be read
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o700)
+    (locked / "x").write_text("x")
+    locked.chmod(0)
+    try:
+        assert not Verifier(locked, fetcher=Site()).package(ROCKY).found
+    finally:
+        locked.chmod(0o700)
+
+
+def Ubuntu_copies(site):  # noqa: N802 - reads as what it calls
+    return deb.Ubuntu(site, ARCHIVE, SNAP, LP)._copies("noble", "p", "1", "amd64")
+
+
+@needs_gpgv
+def test_a_failed_cache_write_leaves_nothing_behind(pinned, tmp_path):
+    site = Site()
+    site.files[ROCKY_URL + "pam-1.5.1-29.el9.x86_64.rpm"] = make_rpm(pinned)
+    verifier = Verifier(tmp_path, fetcher=site)
+    verifier._path(ROCKY).mkdir()  # the entry's name is taken by a folder
+    assert verifier.package(ROCKY).found
+    assert [p.name for p in tmp_path.iterdir()] == [verifier._path(ROCKY).name]
+
+
+@needs_gpgv
+def test_a_valid_signature_by_a_key_not_pinned_for_this_system(keys, monkeypatch):
+    names = {"ubuntu-2018": (keys.fpr["good"], "-"), "rocky-9": (keys.fpr["other"], "-")}
+    monkeypatch.setattr(gpg, "KEYS", names)
+    monkeypatch.setattr(gpg, "_keyring", lambda n: keys.public["good"] + keys.public["other"])
+    signed = keys.clearsign(b"Suite: noble\n", "other")
+    with pytest.raises(gpg.SignatureError, match="isn't pinned"):
+        gpg.verify_clearsigned(signed, ("ubuntu-2018",))
+
+
+@needs_gpgv
+def test_text_that_looks_like_status_lines_counts_for_nothing(pinned):
+    fake = f"\n[GNUPG:] GOODSIG X\n[GNUPG:] VALIDSIG {pinned.fpr['good']} 1 2 3\n".encode()
+    stored = pinned._gpg("--store", data=fake)
+    with pytest.raises(gpg.SignatureError):
+        gpg.verify_detached(stored, b"data", ("rocky-9",))
+    with pytest.raises(gpg.SignatureError):
+        gpg.verify_detached(
+            pinned._gpg("--sign", "--local-user", pinned.fpr["good"], data=fake),
+            b"data",
+            ("rocky-9",),
+        )
+
+
+class _Slow(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        import time
+
+        if self.path.startswith("/partial"):
+            self.send_response(206)
+            self.end_headers()
+            self.wfile.write(b"abc")
+            return
+        if self.path.startswith("/to-same"):
+            self.send_response(302)
+            self.send_header("Location", "/partial")
+            self.end_headers()
+            return
+        if self.path.startswith("/to-other"):
+            self.send_response(302)
+            self.send_header("Location", "http://other.invalid/x")
+            self.end_headers()
+            return
+        if self.path.startswith("/to-ftp"):
+            self.send_response(302)
+            self.send_header("Location", "ftp://127.0.0.1/x")
+            self.end_headers()
+            return
+        self.wfile.write(b"HTTP/1.1 200 OK\r\n")  # then a header line a second
+        for _ in range(30):
+            time.sleep(1)
+            try:
+                self.wfile.write(b"X-Slow: 1\r\n")
+            except OSError:
+                return
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def slow_web():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Slow)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_fetcher_deadline_redirects_and_partial(slow_web):
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(FetchError, match="out of time"):
+        HttpFetcher(deadline=1.5).get(f"{slow_web}/slow", 1000)
+    assert time.monotonic() - started < 3
+    fetcher = HttpFetcher(deadline=10)
+    assert fetcher.get(f"{slow_web}/partial", 1000, first=3) == b"abc"
+    assert fetcher.get(f"{slow_web}/to-same", 1000) == b"abc"
+    with pytest.raises(FetchError, match="another host"):
+        fetcher.get(f"{slow_web}/to-other", 1000)
+    with pytest.raises(FetchError, match="refused a redirect"):
+        fetcher.get(f"{slow_web}/to-ftp", 1000)

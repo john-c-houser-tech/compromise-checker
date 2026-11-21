@@ -873,8 +873,11 @@ def official_result(context: Context, path: str, modules: dict) -> dict[str, Any
     result = ((context.official or {}).get("files") or {}).get(path)
     if not isinstance(result, dict):
         return None
-    sha256 = (modules.get(path) or {}).get("sha256")
-    return result if sha256 and result.get("sha256") == sha256 else None
+    item = modules.get(path) or {}
+    if item.get("sha256"):
+        return result if result.get("sha256") == item["sha256"] else None
+    link = item.get("link_target")
+    return result if link and result.get("link_target") == link else None
 
 
 def _distribution(context: Context) -> str:
@@ -904,8 +907,9 @@ def _why_not_checked(context: Context, path: str, modules: dict, outcome: str | 
         return str(raw.get("reason") or "not checked")
     if isinstance(raw, dict):
         return "the result was for another copy of the file"
-    if not (modules.get(path) or {}).get("sha256"):
-        return "it has no hash to compare (not a regular file, or too large)"
+    item = modules.get(path) or {}
+    if not item.get("sha256") and not item.get("link_target"):
+        return "it has no hash to compare (not a regular file or link, or too large)"
     return "it wasn't among the files checked"
 
 
@@ -918,7 +922,8 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
     new = context.new_since_previous("pam", path)
     outcome = (result or {}).get("outcome")
     package = f"{(result or {}).get('package')} {(result or {}).get('version')}"
-    others = sorted(NOT_CONTENT & set(fields or {}))
+    # Only a file that was there before can have its mode or owner changed.
+    others = sorted(NOT_CONTENT & set(fields or {})) if how == "changed" else []
     if outcome == "matched" and not others:
         older = result.get("older_than_baseline")
         older_seen = result.get("older_than_seen")
@@ -1064,7 +1069,7 @@ def pam_changes(context: Context) -> list[Finding]:
                 if "/security/" not in path:
                     continue
                 if how == "changed" and not (
-                    {"sha256", "content_sha256", "size", "inode"} & set(fields)
+                    {"sha256", "content_sha256", "size", "inode", "link_target"} & set(fields)
                 ):
                     continue
                 result = official_result(context, path, modules)

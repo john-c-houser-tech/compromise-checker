@@ -168,6 +168,23 @@ Check with `sudo sshd -t`, then `sudo systemctl try-reload-or-restart ssh` on Ub
 Keep the session you made the change from open, and check that a new key login still works before closing it.
 The notice goes within the hour.
 
+## What the machine reaches out to
+
+The firewall limits only what comes in. Going out, the tool's machine reaches:
+
+- your servers, over SSH, to check them;
+- the distributions' own package servers, when a PAM module on a server has changed, to check the change
+  against the signed package (Ubuntu's archive and its dated copies, Launchpad, and Rocky Linux's and
+  AlmaLinux's repositories and vaults). `verify.enabled` turns this off, `verify.older_versions` keeps it to
+  the current lists, and `verify.ubuntu_archive`, `verify.rocky` and `verify.almalinux` name your own mirrors.
+  The installer adds `gpgv`, which checks the signatures;
+- GitHub, once a day, for the list of the tool's releases (`updates.check` turns it off);
+- Let's Encrypt, if you gave a web address;
+- GitHub, for threat packs, when someone pulls them.
+
+The [security and privacy policy](security-and-privacy-policy.md#10-what-leaves-your-organization) says what
+each of these carries.
+
 ## Backing up the evidence key
 
 Everything the tool stores is encrypted to one key, made on this machine the first time the tool starts.

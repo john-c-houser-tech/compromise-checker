@@ -676,3 +676,40 @@ def test_a_run_past_an_unreachable_host_still_answers_from_the_cache(tmp_path):
     cached = official.verifier_for(Verify(), tmp_path, cached_only=True)
     result = cached.package(Lookup("rocky", "9", "pam", "1.5.1-1.el9", "x86_64"))
     assert result.transient and "out of reach this run" in result.reason
+
+
+# --- From V.6's proof on real servers ---------------------------------------------------------
+
+
+def test_a_re_created_link_is_checked_by_its_target():
+    # Rocky: pam_unix_acct.so -> pam_unix.so, re-created by every pam update.
+    link = "/usr/lib/x86_64-linux-gnu/security/pam_unix_acct.so"
+    before = dict(BEFORE, pam={**BEFORE["pam"], link: {"type": "l", "link_target": "pam_unix.so",
+                  "inode": 1}}, owners={**BEFORE["owners"], link: owner()})  # fmt: skip
+    after = dict(AFTER, pam={**AFTER["pam"], link: {"type": "l", "link_target": "pam_unix.so",
+                 "inode": 2}}, owners={**AFTER["owners"], link: owner()})  # fmt: skip
+    package = {UNIX: {"sha256": BAD}, link: {"link": "pam_unix.so"}}
+    found = pam_findings(before, after, FakeVerifier(package))
+    assert titles(found) == [("low", "PAM modules updated by Ubuntu's own packages")]
+    assert len(found[0].evidence) == 2
+    # Pointed elsewhere (at pam_permit.so): not the package's link.
+    moved = dict(after, pam={**after["pam"], link: {"type": "l", "link_target": "pam_permit.so",
+                 "inode": 2}})  # fmt: skip
+    found = pam_findings(before, moved, FakeVerifier(package))
+    assert ("high", "A PAM module differs from Ubuntu's package for the installed version") in (
+        titles(found)
+    )
+
+
+def test_an_added_file_s_own_mode_and_owner_aren_t_changes():
+    # Ubuntu: pam_userdb.so arrives with an update; its record has mode and owner fields.
+    new = "/usr/lib/x86_64-linux-gnu/security/pam_userdb.so"
+    after = dict(
+        AFTER,
+        pam={**AFTER["pam"], new: {"sha256": GOOD, "mode": "0644", "uid": 0, "gid": 0}},
+        owners={**AFTER["owners"], new: owner()},
+    )
+    found = pam_findings(
+        BEFORE, after, FakeVerifier({UNIX: {"sha256": BAD}, new: {"sha256": GOOD}})
+    )
+    assert titles(found) == [("low", "PAM modules updated by Ubuntu's own packages")]

@@ -24,12 +24,12 @@ from typing import Any
 
 from checker.packs.versions import VersionError, compare
 from checker.snapshot import Snapshot
-from checker.verify import Lookup, Verifier
+from checker.verify import Lookup, Verifier, package_paths
 from checker.verify import compare as compare_file
 from checker.verify.words import show
 
-OFFICIAL_VERSION = 1
-CHANGED_FIELDS = {"sha256", "content_sha256", "size", "inode"}
+OFFICIAL_VERSION = 2  # 2: links checked by their target
+CHANGED_FIELDS = {"sha256", "content_sha256", "size", "inode", "link_target"}
 SYSTEMS = {"ubuntu": "dpkg", "rocky": "rpm", "almalinux": "rpm", "rhel": "rpm"}
 # The PAM module directories the collector walks (PAM_MODULE_DIRS), one or two
 # levels down: /etc/security/ (configuration) is not one of them.
@@ -40,12 +40,14 @@ MODULE_PATH = re.compile(r"/(?:usr/)?lib(?:64)?/(?:[^/]+/)?security/[^/]+(?:/[^/
 class Target:
     path: str
     how: str  # "added" or "changed"
-    sha256: str
+    sha256: str | None  # a regular file's hash, or None for a link
+    link_target: str | None = None  # a link's target (pam_unix_acct.so -> pam_unix.so)
 
 
 def targets(snapshot: Snapshot, since_baseline: dict[str, Any] | None) -> list[Target]:
     """The PAM module files to check: added, or changed in content, since
-    the baseline; regular files only (a directory or link has no hash)."""
+    the baseline: regular files by their hash, links by their target (a
+    package's update re-creates its links); directories aren't checked."""
     if since_baseline is None:
         return []
     diff = since_baseline.get("pam") or {}
@@ -60,9 +62,12 @@ def targets(snapshot: Snapshot, since_baseline: dict[str, Any] | None) -> list[T
                 continue
             if how == "changed" and not CHANGED_FIELDS & set(fields or {}):
                 continue
-            sha256 = (items.get(path) or {}).get("sha256")
+            item = items.get(path) or {}
+            sha256, link = item.get("sha256"), item.get("link_target")
             if isinstance(sha256, str) and len(sha256) == 64:
                 found.append(Target(path, how, sha256))
+            elif item.get("type") == "l" and isinstance(link, str) and link:
+                found.append(Target(path, how, None, link))
     return sorted(found, key=lambda t: t.path)
 
 
@@ -115,8 +120,11 @@ def _check(
     seen: dict[tuple[str, str], str] | None = None,
     previous: Snapshot | None = None,
 ) -> dict:
-    # The hash compared, so the checks can tell the result is for this very file.
+    # The hash (or link target) compared, so the checks can tell the result is
+    # for this very file.
     base = {"how": target.how, "sha256": target.sha256}
+    if target.link_target is not None:
+        base["link_target"] = target.link_target
 
     def not_checked(reason: str) -> dict:
         return dict(base, outcome="not_checked", reason=reason)
@@ -201,8 +209,21 @@ def _check(
         return dict(
             result, outcome="not_checked", reason=official.reason, transient=official.transient
         )
-    outcome = compare_file(official, target.path, target.sha256, _merged_dirs(snapshot))
+    if target.link_target is not None:
+        outcome = _compare_link(official, target, _merged_dirs(snapshot))
+    else:
+        outcome = compare_file(official, target.path, target.sha256, _merged_dirs(snapshot))
     return dict(result, outcome=outcome, source=official.source, signer=official.signer)
+
+
+def _compare_link(official, target: Target, merged: dict[str, str]) -> str:
+    """A link matches when the package ships a link at that path to the
+    same target: it then leads where the package's does (to a file that is
+    checked in its own right)."""
+    entries = [official.files[p] for p in package_paths(target.path, merged) if p in official.files]
+    if not entries:
+        return "absent"
+    return "matched" if any(e.get("link") == target.link_target for e in entries) else "differs"
 
 
 def _newest_seen(previous: Snapshot | None, results: dict[str, Any] | None) -> dict:

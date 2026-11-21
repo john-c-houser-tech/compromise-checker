@@ -553,6 +553,12 @@ def _moment(text: str | None) -> datetime | None:
 # --- Matching ----------------------------------------------------------------------------
 
 
+# Kinds of finding only a rule that names them can cover: the strongest form
+# of a check, which a rule written for its weaker forms mustn't hide (#189: a
+# module that isn't its package's file, under a rule for unchecked changes).
+NAMED_ONLY = {("pam.changes", "differs")}
+
+
 def matches(
     match: Match, finding: dict[str, Any], events: list | None = None, cache: dict | None = None
 ) -> bool:
@@ -563,6 +569,8 @@ def matches(
     if finding.get("check") != match.check:
         return False
     if match.variant is not None and finding.get("variant") != match.variant:
+        return False
+    if match.variant is None and (finding.get("check"), finding.get("variant")) in NAMED_ONLY:
         return False
     named = match.entity_fields()
     if named and finding.get("entities_complete") is False:

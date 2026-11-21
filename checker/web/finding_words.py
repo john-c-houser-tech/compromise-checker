@@ -287,6 +287,26 @@ WORDS = {
 }
 # Where one kind of finding from a check means something different.
 BY_VARIANT = {
+    ("pam.changes", "official_update"): (
+        "Files in the part of the system that checks passwords were replaced or added, and each one is exactly the file in the distribution's own signed package for the version the server reports, no older than before. That is what a normal update looks like.",
+        "Nothing to do unless this server shows other signs of a break-in.",
+    ),
+    ("pam.changes", "downgrade"): (
+        "A file in the part of the system that checks passwords is the distribution's own, but from an older version than this server had before (at the last known-good check, or since). Going back can bring back a known security hole.",
+        "Check that someone you know went back to that version on purpose, and why.",
+    ),
+    ("pam.changes", "new_package"): (
+        "A new file in the part of the system that checks passwords is the distribution's own, from a package that was installed since the last known-good check.",
+        "Check that someone you know installed that package.",
+    ),
+    ("pam.changes", "version_unknown"): (
+        "A file in the part of the system that checks passwords is the distribution's own, but its version couldn't be compared with the one there before, so a move back to an older version can't be ruled out.",
+        "Check that the version installed now is the one you expect.",
+    ),
+    ("pam.changes", "differs"): (
+        "A file in the part of the system that checks passwords isn't the file the distribution ships for the version installed. Updates don't do that; tampering does.",
+        "Treat this as serious: get advice before you change anything on this server.",
+    ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
         "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",

@@ -181,6 +181,16 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("packs.apply", "only:php2shell-2026-10 ,x-1", "only: php2shell-2026-10, x-1"),
         ("packs.source", "https://mirror.example.org/packs", "https://mirror.example.org/packs/"),
         ("updates.check", "off", False),
+        ("verify.enabled", "off", False),
+        ("verify.seconds_per_server", "120", 120),
+        ("verify.older_versions", "off", False),
+        (
+            "verify.ubuntu_archive",
+            "https://mirror.example.org/ubuntu",
+            "https://mirror.example.org/ubuntu",
+        ),
+        ("verify.rocky", "https://mirror.example.org/rocky", "https://mirror.example.org/rocky"),
+        ("verify.almalinux", "http://mirror.example.org/alma", "http://mirror.example.org/alma"),
         ("advisor.enabled", "on", True),
         ("advisor.model", "claude-sonnet-5-5", "claude-sonnet-5-5"),
         ("advisor.triage_model", "claude-haiku-5-5", "claude-haiku-5-5"),
@@ -216,7 +226,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 def test_the_table_lists_every_setting_tested():
     # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
-    assert len(SETTABLE) == 25
+    assert len(SETTABLE) == 31
 
 
 @pytest.mark.parametrize(
@@ -236,6 +246,8 @@ def test_the_table_lists_every_setting_tested():
         ("advisor.api_key_source", "command:op read 'unclosed", "doesn't parse"),
         ("advisor.model", "bad model; rm", "should match pattern"),
         ("advisor.max_cost_per_run", "-1", "greater than 0"),
+        ("verify.seconds_per_server", "1", "greater than or equal to 5"),
+        ("verify.rocky", "ftp://mirror.example.org/", "should match pattern"),
     ],
 )
 def test_invalid_values_are_refused_and_change_nothing(base, capsys, key, text, words):

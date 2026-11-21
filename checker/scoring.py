@@ -18,8 +18,9 @@ import math
 from collections import defaultdict
 from typing import Any
 
-SCORING_VERSION = 4  # 2: chains; 3: threat packs' ratios (plan 4.5); 4: no account in a
-# chain's title (the server names accounts: it's in the chain, shown as the server's)
+SCORING_VERSION = 5  # 2: chains; 3: threat packs' ratios (plan 4.5); 4: no account in a
+# chain's title (the server names accounts: it's in the chain, shown as the server's); 5: the
+# finding for an update's PAM modules joins no group (#189)
 
 DEFAULT_PRIOR = 0.02  # DESIGN.md §11.2
 
@@ -235,9 +236,13 @@ def _groups(findings: list[dict[str, Any]], counted: list[int]) -> list[list[int
 
     holder: dict[str, int] = {}
     for i in counted:
-        if findings[i]["check"] == "pack.detection":
-            # A pack's finding can name many paths: it mustn't join core
-            # findings about them into one group (and cut them).
+        if findings[i]["check"] == "pack.detection" or (
+            findings[i]["check"],
+            findings[i].get("variant"),
+        ) == ("pam.changes", "official_update"):
+            # A pack's finding, or the one finding for an update's PAM modules
+            # (#189), can name many paths: it mustn't join core findings about
+            # them into one group (and cut them).
             continue
         for entity in findings[i].get("entities") or []:
             if entity.startswith(GROUPING_ENTITIES):

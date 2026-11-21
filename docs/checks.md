@@ -114,7 +114,10 @@ reboots inside them informational ([whitelists](whitelists.md#maintenance-window
 | `sshd.config` | sshd settings added or removed | high for settings that change who can log in and how (PermitRootLogin, ports, key and principal files and commands, PasswordAuthentication, Match, Include…), else medium | yes |
 | `pam.changes` | a `pam_exec` line (PAM running a program) | medium | no |
 | | PAM lines added or removed | high | yes |
-| | new or changed files in a PAM module directory | high | yes |
+| | new or changed files in a PAM module directory, each the same file as in the distribution's signed package for the version installed (a link: to the same target as the package's link), not older than the baseline's or than one seen since (an update; one finding for them all, `official_update`) | low | yes |
+| | the same, but older than the baseline's version or than one seen since (`downgrade`), from a package installed since the baseline (`new_package`), or with a version that couldn't be compared (`version_unknown`) | medium | yes |
+| | a module that isn't the file in the distribution's package for the version installed (`differs`); also an unchanged module, or one at the first collection, so a module swapped before the baseline shows, and likewise one whose package has no such file or a link there (unchanged modules that can't be checked are a coverage note instead) | high | no |
+| | other new or changed files in a PAM module directory (`added`, `changed`), including those that couldn't be checked against the distribution's package, and any module, the package's own content or not, that others than root can write, that is setuid, setgid or sticky, or that root doesn't own, even when only its mode or owner changed (the summary says why) | high | yes |
 | | a PAM module no package installed | high | no |
 
 Logins at unusual hours (DESIGN.md §8.3) need a per-host profile and come

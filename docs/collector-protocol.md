@@ -93,6 +93,26 @@ stores it with the evidence; the manifest carries the version string only.
 stdout carries a single **gzip** stream. Decompressed, it is **UTF-8 JSON
 Lines**: one JSON object per line, each with a `type` field.
 
+**Names that aren't UTF-8.** A file name (or other text) may hold bytes that
+aren't UTF-8. Every text outside a chunk's data is written so that it can
+always be sent and two different names are never written the same:
+
+- a byte that isn't UTF-8 is written `\xHH` (lowercase hex, `80` to `ff`);
+- a run of literal backslashes directly before such a byte, or before a
+  literal `x` and two hex digits `80` to `ff`, is written doubled;
+- any other lone surrogate (from JSON a server wrote) is written as the
+  bytes of its own UTF-8 form, by the first rule.
+
+Reading back: before `xHH` (lowercase, `80` to `ff`), a run of n backslashes
+is n/2 literal backslashes and then the text `xHH` when n is even, and
+(n-1)/2 literal backslashes and then that byte when n is odd. Every other
+backslash is itself. So names without such a byte or such a literal escape,
+systemd's `\x2d` and its other escapes below `80` among them, are sent
+exactly as they are; systemd's escapes of non-ASCII bytes (`caf\xc3\xa9`)
+arrive with their backslashes doubled. (Without the second rule, a file
+literally named `pam_\xff.so` would pass for one named with the byte 0xff,
+and one could hide the other.)
+
 ```
 manifest                       exactly once, first
 ( record

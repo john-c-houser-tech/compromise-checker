@@ -318,6 +318,7 @@ SYSTEMS = {
         (
             "python3-venv",
             "iproute2",
+            "gpgv",  # checks the distribution's signatures (#189)
             "ufw",
             "unattended-upgrades",
             "update-notifier-common",
@@ -331,6 +332,7 @@ SYSTEMS = {
         (
             "python3-venv",
             "iproute2",
+            "gpgv",  # checks the distribution's signatures (#189)
             "ufw",
             "unattended-upgrades",
             "update-notifier-common",
@@ -344,6 +346,7 @@ SYSTEMS = {
         (
             "python3.12",
             "iproute",
+            "gnupg2",  # gpgv: checks the distribution's signatures (#189)
             "firewalld",
             "dnf-automatic",
             "dnf-plugins-core",
@@ -355,7 +358,15 @@ SYSTEMS = {
     ("rocky", "10"): System(
         "Rocky Linux 10",
         "python3",
-        ("iproute", "firewalld", "dnf-automatic", "dnf-plugins-core", "pango", "harfbuzz"),
+        (
+            "iproute",
+            "gnupg2",  # gpgv: checks the distribution's signatures (#189)
+            "firewalld",
+            "dnf-automatic",
+            "dnf-plugins-core",
+            "pango",
+            "harfbuzz",
+        ),
         _DNF,
     ),
 }

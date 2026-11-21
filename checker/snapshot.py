@@ -24,10 +24,12 @@ from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Tr
 
 # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks read
 # whole, fail2ban's banned addresses; 15: nft's JSON beside its text
-SNAPSHOT_VERSION = 16
+SNAPSHOT_VERSION = 18
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve; 16: a /run file's content no longer brings back its
-# inode and times
+# inode and times; 17: PAM modules' owners (#189); 18: packages listed twice marked
+
+MAX_PAM_OWNERS = 2000  # the collector sends at most this many (#189)
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -1274,6 +1276,32 @@ class SnapshotBuilder:
             self.section("unowned_executables").items[data["path"]] = _meta(data)
         elif name == "system_files_summary":
             self.live["system_files_summary"] = data
+        elif name == "pam_module_owner" and isinstance(data.get("path"), str):
+            # Who the server says owns each PAM module (#189): only used to find the
+            # distribution's package, so kept in live and never compared. An older
+            # collector sends no summary, and then the owners count as unknown.
+            owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
+            listed = owners["owners"]
+            if (
+                isinstance(data.get("package"), str)
+                and len(listed) < MAX_PAM_OWNERS
+                and data["path"] not in listed
+            ):
+                listed[data["path"]] = {
+                    "package": data["package"],
+                    "arch": data.get("arch") if isinstance(data.get("arch"), str) else None,
+                    "several": data.get("several") is True,
+                }
+            else:
+                owners["dropped"] = owners.get("dropped", 0) + 1
+        elif name == "pam_owners_summary":
+            owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
+            # Complete only as the collector says, and only if every record it counted came.
+            owners["complete"] = (
+                data.get("complete") is True
+                and data.get("count") == len(owners["owners"])
+                and not owners.get("dropped")
+            )
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 
@@ -1302,9 +1330,13 @@ class SnapshotBuilder:
                 # Several at once: rpm's imported keys (each a gpg-pubkey,
                 # no architecture), kernels installed side by side.
                 key = f"{key} {data.get('version')}"
-            self.section("packages").items[key] = {
-                k: data.get(k) for k in ("manager", "version", "installed")
-            }
+            items = self.section("packages").items
+            entry = {k: data.get(k) for k in ("manager", "version", "installed")}
+            if key in items:
+                # Two entries for one name and architecture (an interrupted
+                # dnf, say): which version is installed isn't known (#189).
+                entry["duplicate"] = True
+            items[key] = entry
         elif name == "signing_key" and data.get("path"):
             self.section("software_files").items[data["path"]] = dict(
                 _meta(data), record="signing_key"

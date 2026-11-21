@@ -61,6 +61,7 @@ from checker.inventory import (
     load_inventory,
     new_host_problems,
 )
+from checker.official import unreachable, verifier_for
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.releases import ReleaseError
@@ -2106,6 +2107,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         # All of them before any analysis: one broken file stops the run.
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
         packs_for, _ = _packs_in_force(base, config, inventory)
+        verify_down = False  # the distributions' servers out of reach: stop asking
         for number, host in enumerate(hosts):
             if number:
                 print()
@@ -2114,7 +2116,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 assessment = analyze(
                     store, host, identity, recipients, args.bundle, prior, whitelists[host],
                     *packs_for(host),
+                    verifier=verifier_for(config.verify, base, cached_only=verify_down),
                 )  # fmt: skip
+                verify_down = verify_down or unreachable(assessment)
                 _print_assessment(assessment, args)
             except EvidenceError as exc:
                 print(f"checker: {host}: {exc}", file=sys.stderr)

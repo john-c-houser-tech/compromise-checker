@@ -15,7 +15,14 @@ from typing import Any
 import pyrage
 from pyrage import x25519
 
-from checker.analysis import load_events, parse_bundle, snapshot_of, store_parsed
+from checker.analysis import (
+    load_events,
+    load_official,
+    parse_bundle,
+    snapshot_of,
+    store_official,
+    store_parsed,
+)
 from checker.baseline import changes, usable_bundles
 from checker.checks import CHECKS_VERSION, Context, parse_time, run_checks
 from checker.checks.containers import uninventoried
@@ -23,6 +30,9 @@ from checker.correlate import find_chains
 from checker.events import PARSER_VERSION, Event
 from checker.evidence import Config, EvidenceError, Store, open_text, seal_text
 from checker.inventory import Inventory
+from checker.official import stored_is_current, verify_pam
+from checker.official import summary as official_counts
+from checker.official import targets as official_targets
 from checker.packs.detect import raise_referenced
 from checker.scoring import DEFAULT_PRIOR, SCORING_VERSION, score
 from checker.snapshot import FULL, SNAPSHOT_VERSION, Snapshot
@@ -253,6 +263,74 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     return raised, raised_by
 
 
+def official_results(
+    store, row, identity, recipients, snapshot, baseline_snapshot, since_baseline, baseline_id,
+    verifier, previous_snapshot=None, previous_id=None,
+) -> dict[str, Any] | None:  # fmt: skip
+    """This collection's PAM module results: stored ones made against the
+    same baseline, else (with a verifier) checked now and stored."""
+    stored = load_official(store, row, identity)
+    # Results that failed on this machine's side (network, time) are asked
+    # again whenever a verifier is at hand.
+    if stored_is_current(stored, baseline_id, retrying=verifier is not None):
+        return stored
+    if verifier is None or not official_targets(snapshot, since_baseline, every=True):
+        return None
+    previous_results = None
+    if previous_id and previous_id != baseline_id:
+        previous_results = load_official(store, store.bundle(previous_id), identity)
+    results = verify_pam(
+        snapshot, baseline_snapshot, since_baseline, verifier, baseline_id,
+        previous_snapshot, previous_results,
+    )  # fmt: skip
+    store_official(store, row, recipients, results)
+    return results
+
+
+def official_notes(official: dict[str, Any] | None, changed: int) -> list[str]:
+    """Why changed PAM modules weren't checked against the distribution's
+    packages, for the assessment's notes."""
+    if official is not None:
+        notes = _unchanged_notes(official)
+    else:
+        notes = []
+    if not changed:
+        return notes
+    if official is None:
+        return [
+            f"{changed} changed PAM module file(s) weren't checked against the distribution's"
+            " own packages (verify is off, or this collection wasn't checked)"
+        ]
+    counted = official_counts(official)
+    notes += [
+        f"{count} changed PAM module file(s) couldn't be checked against the distribution's"
+        f" own packages: {reason}"
+        for reason, count in sorted(counted["not_checked"].items())
+    ]
+    if counted.get("baseline_owner_unknown"):
+        notes.append(
+            "the baseline is from before the checker recorded who owns each PAM module, so a"
+            " module moved to another package since then can't be ruled out until a new"
+            " baseline is taken"
+        )
+    return notes
+
+
+def _unchanged_notes(official: dict[str, Any]) -> list[str]:
+    """Unchanged modules that couldn't be checked: a module swapped before
+    the baseline wouldn't show there, so the coverage says so (#189, V.7)."""
+    reasons = official_counts(official).get("unchanged_not_checked") or {}
+    return [
+        f"{count} PAM module file(s) couldn't be checked against the distribution's own"
+        f" packages, so a module swapped before the first check wouldn't show there: {reason}"
+        for reason, count in sorted(reasons.items())
+    ]
+
+
+def official_summary(official: dict[str, Any] | None) -> dict[str, Any] | None:
+    return None if official is None else official_counts(official)
+
+
 def packs_applied(packs: list[Any] | None) -> list[dict[str, Any]]:
     """The threat packs an analysis applied, as it records them: id and
     version (a version's content is pinned once accepted, plan 4.2)."""
@@ -299,12 +377,17 @@ def analyze(
     whitelist: Whitelist | None = None,
     packs: list[Any] | None = None,
     pack_problems: list[str] | None = None,
+    verifier: Any = None,
 ) -> dict[str, Any]:
     """Run every check on a host's bundle (by default its latest), score
     the findings from `prior` (value, source) and store the assessment;
     returns it. `packs` are the threat packs in force, `pack_problems` why
     any kept one isn't among them (checker.packs.store.in_force): coverage
-    gaps, since what they would have found isn't looked for."""
+    gaps, since what they would have found isn't looked for. `verifier`
+    (checker.verify.Verifier) checks changed PAM modules against the
+    distribution's packages when this collection's results aren't stored
+    yet; without one (a report rebuilt, the step turned off) only stored
+    results are used, and nothing is downloaded."""
     found = changes(store, host, identity, recipients, bundle_id)
     row = store.bundle(found.bundle_id)
     snapshot = snapshot_of(store, row, identity, recipients)
@@ -313,7 +396,7 @@ def analyze(
         parsed = parse_bundle(row, identity)
         store_parsed(store, row, recipients, parsed)
     since_baseline = since_previous = None
-    previous_time = None
+    previous_time = previous_id = None
     previous_snapshot = None
     no_baseline = "no baseline yet"
     notes = list(found.notes)
@@ -330,6 +413,7 @@ def analyze(
         else:
             since_previous = comparison.differences
             previous_time = store.bundle(comparison.bundle_id)["started_at"]
+            previous_id = comparison.bundle_id
             previous_snapshot = snapshot_of(
                 store, store.bundle(comparison.bundle_id), identity, recipients
             )
@@ -370,6 +454,12 @@ def analyze(
             loaded.append([events_of(store, r, identity, recipients) for r in rows])
         return loaded[0]
 
+    official = official_results(
+        store, row, identity, recipients, snapshot, baseline_snapshot, since_baseline,
+        found.baseline_id, verifier, previous_snapshot, previous_id,
+    )  # fmt: skip
+    notes += official_notes(official, len(official_targets(snapshot, since_baseline)))
+
     # The account this run logged in as (its stored session): known even
     # when the own-session filter couldn't tie its login to it (NAT).
     session_text = open_text(row["session"], identity)
@@ -393,6 +483,7 @@ def analyze(
         baseline_snapshot=baseline_snapshot,
         packs=list(packs or []),
         collected_at=row["started_at"],
+        official=official,
     )
     found_dicts, ran, scored, applied = evaluate(context, prior, whitelist)
     counts = count(found_dicts)
@@ -418,6 +509,7 @@ def analyze(
         # The threat packs applied, so the analysis can be reproduced.
         "packs": packs_applied(packs),
         "packs_not_applied": list(pack_problems or []),
+        "official_files": official_summary(official),
         "exposures": exposure_records(context.exposures),
         "findings": found_dicts,
         "checks": ran,

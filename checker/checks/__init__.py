@@ -24,8 +24,9 @@ from checker.snapshot import Snapshot
 # 14: threat packs' detections (plan 4.5); 15: nftables read as JSON beside text; 16: no
 # folder name from the server in a title (it's in the summary); 17: account changes the
 # baseline's own logs held, containerd's new random port, and dpkg lists rewritten by their
-# own package's update are no longer counted (#198-#200).
-CHECKS_VERSION = 17
+# own package's update are no longer counted (#198-#200); 18: changed PAM modules judged
+# against the distribution's own packages (#189).
+CHECKS_VERSION = 18
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"
@@ -107,6 +108,10 @@ class Context:
     packs: list[Any] = field(default_factory=list)
     collected_at: str | None = None
     exposures: list[Any] = field(default_factory=list)
+    # PAM modules (every one since V.7) checked against the distribution's own
+    # packages (checker.official): {"files": {path: result}, ...}, or None when that
+    # wasn't done for this collection (turned off, or not run).
+    official: dict[str, Any] | None = None
 
     def of(self, *types: str) -> Iterator[tuple[int, Event]]:
         """(index, event) for events of these types (or type prefixes ending

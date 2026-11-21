@@ -226,7 +226,7 @@ snapshot, verification against recorded package data, and the checks:
   baseline's, or whose version is lower than the baseline's (by real dpkg/rpm ordering), isn't
   explained either: the version case is decision 2's medium. Tests: the release switch, mixed
   versions inside one package, and an owner swap.
-- **V.6 Docs and proof:** `docs/checks.md`, the security and privacy policy, the install page's
+- **V.6 Docs and proof: DONE 2026-11-21** (below). `docs/checks.md`, the security and privacy policy, the install page's
   outbound hosts, and a scoring calibration rerun. Then a Linode proof on Ubuntu 24.04 and Rocky 9
   (a real PAM update should read low, a swapped module high). Cents, with one OK from John.
 
@@ -282,6 +282,37 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
 - **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
   Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
 - **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.
+
+## V.6: the proof on real servers (2026-11-21)
+
+`tests/integration/pam_update_proof.py`, on new Linodes (Ubuntu 24.04, Rocky Linux 9): PAM moved
+back to an older official version and a baseline taken; PAM updated the ordinary way, collected
+and analysed with verification on, as `checker run` does; then `pam_permit.so` copied over
+`pam_unix.so`, collected and analysed again.
+
+| | After the update | After the swap |
+|---|---|---|
+| Ubuntu 24.04, libpam-modules 1.5.3-5ubuntu5 to 5ubuntu5.7 | one low `official_update`, 44 files matched, Low (0.0297), 10.4 s verifying | high `differs`, High (0.8596) |
+| Rocky Linux 9, pam 1.5.1-28.el9_8.1 to 29.el9 | one low `official_update`, 53 files and links matched, Low (0.0439), 0.5 s | high `differs`, Critical (0.9018) |
+
+The first real run found two things the built tests hadn't, both fixed before the passing run:
+Rocky's `pam_unix_acct.so` and its siblings are links to `pam_unix.so` that every update
+re-creates, so links are now checked by their target against the package's own link (results
+version 2); and an added file's own mode and owner were read as changes (now only for a file that
+was there before). Three runs, six Nanodes for minutes each: about two cents.
+
+Also in V.6: the installer adds `gpgv` (Ubuntu) and `gnupg2` (Rocky), and the install guide says
+what the machine reaches out to.
+
+From #215's two reviews: a PAM module that others than root can write, that is setuid, setgid or
+sticky, or that root doesn't own is always high, added or changed, the package's own content or
+not, and even when only its mode or owner changed (that used to make no finding at all); a
+harmless mode change beside a genuine update doesn't stop it counting as the update. **For the
+next release:** an install that is only ever updated gets no new system packages, and Ubuntu
+26.04's apt may no longer bring `gpgv` (it prefers `sqv`); check a fresh 26.04 image, and if
+`gpgv` is missing, say in the release notes to install it (or have the verifier fall back). The scoring calibration (fresh servers) isn't rerun: a fresh
+server has no baseline to differ from, so nothing here changes its score; the golden cases
+moved only in the scoring version's number.
 
 ## V.5 as built (2026-11-21)
 

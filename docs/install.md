@@ -35,7 +35,8 @@ out what's beside it as well. In order, it:
    means no. [Locking the machine down](#locking-the-machine-down)
    says what each does and when one isn't offered. Nothing is changed yet.
 4. **Installs what's needed** from the system's own packages: a Python the tool can run on, the libraries
-   PDF reports use, the firewall, and what installs security updates.
+   PDF reports use, the firewall, what installs security updates, and `gpgv`, which checks the
+   distributions' signatures.
 5. **Turns on a firewall and automatic security updates,** saying as it does each one.
 6. **Makes an account** called `compromise-checker`, which nobody can log in to, with a private folder at
    `/var/lib/compromise-checker`. If an account by that name already exists and doesn't look like one the
@@ -167,6 +168,29 @@ Check with `sudo sshd -t`, then `sudo systemctl try-reload-or-restart ssh` on Ub
 `sudo systemctl reload sshd` on Rocky.
 Keep the session you made the change from open, and check that a new key login still works before closing it.
 The notice goes within the hour.
+
+## What the machine reaches out to
+
+The firewall limits only what comes in. Going out, the tool itself reaches:
+
+- your servers, over SSH, to check them;
+- the distributions' own package servers, when a PAM module on a server has changed or appeared, to check it
+  against the signed package (Ubuntu's archive and its dated copies, Launchpad, and Rocky Linux's and
+  AlmaLinux's repositories and vaults). `verify.enabled` turns this off, and `verify.older_versions` keeps
+  it to the current lists. `verify.ubuntu_archive`, `verify.rocky` and `verify.almalinux` name your own
+  mirrors for the current lists; the dated copies, Launchpad and the vaults are still asked unless
+  `verify.older_versions` is off;
+- GitHub, once a day, for the list of the tool's releases (`updates.check` turns it off), and GitHub and
+  PyPI when an update is installed;
+- Let's Encrypt, if you gave a web address;
+- GitHub, for threat packs, when someone pulls them;
+- whatever you turn on yourself: the AI advisor, a reputation service, your notify command, a PostgreSQL
+  index on another server.
+
+The machine's own automatic security updates reach the system's usual package servers as well.
+
+The [security and privacy policy](security-and-privacy-policy.md#10-what-leaves-your-organization) says what
+each of these carries.
 
 ## Backing up the evidence key
 

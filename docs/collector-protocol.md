@@ -94,7 +94,11 @@ stdout carries a single **gzip** stream. Decompressed, it is **UTF-8 JSON
 Lines**: one JSON object per line, each with a `type` field. A file name (or
 other text) holding bytes that aren't UTF-8 is sent with those bytes written
 as `\xff`, so such a name can never stop a module. A real name spelled with
-a backslash and `x` reads the same: both are still reported.
+a backslash and `x` reads the same, so two such files in one directory share
+one entry and one can mask the other's changes; a new name like that is
+itself reported (in a PAM module directory, as a high finding). Escaping
+every backslash would remove that, but would rename every systemd unit
+written with `\x2d` once, as a burst of changes.
 
 ```
 manifest                       exactly once, first

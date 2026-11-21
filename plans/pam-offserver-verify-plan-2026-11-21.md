@@ -97,6 +97,7 @@ the checks:
 |---|---|
 | Every changed module `matched` | **One low finding**, "PAM modules updated by Ubuntu's own packages", listing the packages and versions |
 | A module `differs` from the official file | **High, per file**, "A PAM module differs from Ubuntu's package for the installed version". This is the strongest version of the finding: the real file was available and didn't match |
+| `matched`, but an older version than at the baseline | **Medium**, "PAM was moved back to an older Ubuntu package", naming both versions (decision 2) |
 | `not_checked` | **High, per file**, as today, with the reason shown |
 
 A mix of results is reported as a mix: the matched modules get one low finding, and the rest stay
@@ -157,8 +158,8 @@ snapshot, verification against recorded package data, and the checks:
    both versions.
 3. **Verify every module at each collection, or only the changed ones?** Checking all of them at
    the first collection would also catch a module trojaned **before** the baseline, which today
-   nothing catches. With the cache the cost is one fetch per package version. I'd say all of them,
-   but as a second step after the changed-only version works.
+   nothing catches. With the cache the cost is one fetch per package version. **DECIDED (John,
+   2026-11-21): all of them, as step V.7, after the changed-only version is proven.**
 4. **Later, `package.changed`:** the same check could cover every critical path it watches (sshd,
    sudo, the loader, and so on). This plan stops at PAM.
 
@@ -183,6 +184,10 @@ snapshot, verification against recorded package data, and the checks:
 - **V.6 Docs and proof:** `docs/checks.md`, the security and privacy policy, the install page's
   outbound hosts, and a scoring calibration rerun. Then a Linode proof on Ubuntu 24.04 and Rocky 9
   (a real PAM update should read low, a swapped module high). Cents, with one OK from John.
+
+- **V.7 Every module, not only the changed ones** (decision 3): check all PAM modules at the
+  first collection and now and again after, so a module swapped before the baseline shows as
+  "differs from the package". Starts after V.6's proof passes.
 
 Each PR gets two independent agent reviews, and V.2 and V.5 also get a security review, before
 John merges. V.2–V.5 can't help anyone until all of them are in, so they ride to main together.

@@ -293,9 +293,10 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
   architecture), so the collector sends no versions of its own.
 - From the reviews: only the paths the PAM listing walks count (the directory, then one or two
   levels, `*` never crossing `/`), since `/usr/lib/jvm/.../security/` and Python's `security`
-  packages would otherwise fill the limit first. Paths over 4,096 bytes or not UTF-8, and
-  package or architecture names that don't look like dpkg's or rpm's, are left out and the
-  owners called incomplete. A path more than one package lists is marked `several`. The
+  packages would otherwise fill the limit first. Paths over 4,096 bytes, and package or
+  architecture names that don't look like dpkg's or rpm's, are left out and the owners called
+  incomplete. (A path that isn't UTF-8 is kept since #212: it is written the way the walk
+  writes the same path.) A path more than one package lists is marked `several`. The
   snapshot believes "complete" only when the summary's count matches the records it kept.
 
 ## V.2 as built (PR #210, 2026-11-21)

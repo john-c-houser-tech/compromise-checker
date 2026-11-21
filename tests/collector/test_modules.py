@@ -1739,6 +1739,43 @@ class PamTests(FixtureRoot):
         self.assertEqual(files["/usr/lib64/security/pam_unix.so"]["sha256"], expected)
         self.assertEqual(len(records_named(records, "walk_summary")), 1)
 
+    def test_a_module_whose_name_isnt_utf8_is_reported_not_a_crash(self):
+        # Root could otherwise stop the PAM listing (and hide what comes after) with one file.
+        self.write("usr/lib64/security/pam_unix.so", b"\x7fELF")
+        directory = os.path.join(os.fsencode(self.root), b"usr/lib64/security")
+        with open(os.path.join(directory, b"pam_\xff.so"), "wb") as handle:
+            handle.write(b"\x7fELF hidden")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        with open(os.path.join(os.fsencode(self.root), b"etc/pam.d/odd\xfe"), "wb") as handle:
+            handle.write(b"auth required pam_\xff.so\n")
+        records = collect(self.root, ["pam"])
+        files = {f["path"]: f for f in records_named(records, "module_file")}
+        self.assertIn("/usr/lib64/security/pam_\\xff.so", files)
+        self.assertIn("/usr/lib64/security/pam_unix.so", files)
+        self.assertEqual(
+            files["/usr/lib64/security/pam_\\xff.so"]["sha256"],
+            hashlib.sha256(b"\x7fELF hidden").hexdigest(),
+        )
+        self.assertEqual(records[-1]["modules"]["pam"]["status"], "ok")
+
+    def test_a_twin_spelled_with_a_backslash_is_its_own_entry(self):
+        # A literal "pam_\\xff.so" must never pass for a file named with the byte 0xff.
+        directory = os.path.join(os.fsencode(self.root), b"usr/lib64/security")
+        os.makedirs(directory)
+        for name, body in ((b"pam_\\xff.so", b"decoy"), (b"pam_\xff.so", b"\x7fELF real")):
+            with open(os.path.join(directory, name), "wb") as handle:
+                handle.write(body)
+        records = collect(self.root, ["pam"])
+        files = {f["path"]: f for f in records_named(records, "module_file")}
+        self.assertEqual(
+            files["/usr/lib64/security/pam_\\xff.so"]["sha256"],
+            hashlib.sha256(b"\x7fELF real").hexdigest(),
+        )
+        self.assertEqual(
+            files["/usr/lib64/security/pam_\\\\xff.so"]["sha256"],
+            hashlib.sha256(b"decoy").hexdigest(),
+        )
+
     def test_linked_module_directory_is_walked_once_at_its_target(self):
         self.write("usr/lib/security/pam_unix.so", b"\x7fELF")
         Path(self.root, "usr/lib64").mkdir(parents=True)
@@ -2027,6 +2064,68 @@ MOUNTINFO = (
 )
 
 
+class PrintableTests(FixtureRoot):
+    """_printable: bytes that aren't UTF-8 written \\xHH, and different names
+    never written the same (collector-protocol.md, "Names that aren't UTF-8")."""
+
+    @staticmethod
+    def read_back(text):
+        """The protocol's reading rule, written independently of the collector."""
+        out, i = bytearray(), 0
+        while i < len(text):
+            if text[i] == "\\":
+                j = i
+                while j < len(text) and text[j] == "\\":
+                    j += 1
+                run, rest = j - i, text[j : j + 3]
+                byte = len(rest) == 3 and rest[0] == "x" and rest[1] in "89abcdef"
+                byte = byte and rest[2] in "0123456789abcdef"
+                if byte and run % 2:
+                    out += b"\\" * (run // 2) + bytes([int(rest[1:], 16)])
+                    i = j + 3
+                elif byte:
+                    out += b"\\" * (run // 2)
+                    i = j
+                else:
+                    out += b"\\" * run
+                    i = j
+            else:
+                out += text[i].encode("utf-8")
+                i += 1
+        return bytes(out)
+
+    def test_every_name_reads_back_and_none_collide(self):
+        import itertools
+
+        collector = load_collector(self.root)
+        seen = {}
+        alphabet = [b"\\", b"x", b"f", b"9", b"\xff", b"\x9f", b"a", b"\xc3"]
+        for size in range(1, 6):
+            for parts in itertools.product(alphabet, repeat=size):
+                name = b"".join(parts)
+                text = collector._printable(os.fsdecode(name))
+                text.encode("utf-8")  # always sendable
+                self.assertEqual(self.read_back(text), name, (name, text))
+                self.assertNotIn(text, seen, (name, seen.get(text)))
+                seen[text] = name
+
+    def test_a_long_run_of_backslashes_takes_no_time(self):
+        # One process argument could otherwise stall the processes module (quadratic regex).
+        import time
+
+        collector = load_collector(self.root)
+        started = time.monotonic()
+        collector._printable("\\x8f" + "\\" * 1_000_000 + "y")
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_ordinary_and_systemd_names_are_unchanged(self):
+        collector = load_collector(self.root)
+        for name in ("/etc/x", "dev-disk-by\\x2duuid-1.swap", "a\\b", "caf\u00e9", "\\x8"):
+            self.assertEqual(collector._printable(name), name)
+        self.assertEqual(collector._printable("caf\\xc3\\xa9.mount"), "caf\\\\xc3\\\\xa9.mount")
+        self.assertEqual(collector._printable("\ud800"), "\\xed\\xa0\\x80")  # from JSON
+
+
 class MountTests(FixtureRoot):
     """Nothing under an automount point or on a network file system is
     looked inside: that would mount network drives, or could hang."""
@@ -2040,6 +2139,14 @@ class MountTests(FixtureRoot):
         )
         self.write("etc/ssh/sshd_config", b"")
         self.key = f"ssh-ed25519 {ED25519}\n".encode()
+
+    def test_a_mount_point_whose_name_isnt_utf8_is_still_guarded(self):
+        self.write(
+            "proc/self/mountinfo",
+            MOUNTINFO.encode() + b"43 40 0:43 / /srv/\xff rw - nfs4 f:/x rw\n",
+        )
+        collector = load_collector(self.root)
+        self.assertEqual(collector.mount_risk(os.fsdecode(b"/srv/\xff/x")), "network_filesystem")
 
     def test_risk_classification(self):
         collector = load_collector(self.root)
@@ -3413,6 +3520,18 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(len(records_named(records, "privileged_file")), 2)  # still reported
         self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
 
+    def test_a_packaged_file_named_with_a_byte_that_isnt_utf8_is_owned(self):
+        self.fixture()
+        with open(Path(self.root, "var/lib/dpkg/info/coreutils.list"), "ab") as listing:
+            listing.write(b"/usr/bin/caf\xe9\n")
+        with open(os.path.join(os.fsencode(self.root), b"usr/bin/caf\xe9"), "wb") as handle:
+            handle.write(b"\x7fELF packaged")
+        os.chmod(os.path.join(os.fsencode(self.root), b"usr/bin/caf\xe9"), 0o755)  # noqa: S103 - a program, as packaged
+        records = self.run_with(caps={})
+        unowned = {r["path"] for r in records_named(records, "unowned_executable")}
+        self.assertNotIn("/usr/bin/caf\\xe9", unowned)  # the list and the walk agree
+        self.assertIn("/usr/bin/evil", unowned)
+
     def test_pam_module_owners_with_their_architecture(self):
         # #189: the owner of each PAM module file, so the controller can fetch its package.
         self.fixture()
@@ -3574,10 +3693,11 @@ class SystemFilesTests(FixtureRoot):
             {"path": "/usr/lib64/security/pam_pam.so", "package": "pam", "arch": "x86_64"},
         )
         self.assertEqual(owners["/usr/lib64/security/pam_sssd-client.so"]["package"], "sssd-client")
-        self.assertEqual(len(owners), 2)  # the undecodable name is left out...
+        # A name that isn't UTF-8 is sent the way the walk sends the same path.
+        self.assertEqual(owners["/usr/lib64/security/pam_\\xff.so"]["package"], "odd")
         self.assertEqual(
-            records_named(records, "pam_owners_summary"), [{"complete": False, "count": 2}]
-        )  # ...and the owners aren't called complete
+            records_named(records, "pam_owners_summary"), [{"complete": True, "count": 3}]
+        )
 
     def test_unowned_shared_library_without_execute_bit(self):
         self.fixture()
@@ -6005,6 +6125,22 @@ class ContainerTests(FixtureRoot):
         for never in ("CanaryContainerEnv", "CanaryLabel", "cc_project_default", "3141592"):
             self.assertNotIn(never, text)  # the environment, labels, network names, pids
         self.assertEqual(sources(records), {})  # no file text at all
+
+    def test_lone_surrogates_in_a_container_s_json_dont_stop_the_module(self):
+        config = json.loads(docker_config("web"))
+        config["Created"], config["Name"] = "\ud800", "/x\udc41"
+        self.write(
+            f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", json.dumps(config).encode()
+        )
+        records = collect(self.root, ["containers"])
+        self.assertEqual(records[-1]["modules"]["containers"]["status"], "ok")
+        self.assertEqual(len(named(records, "container")), 1)
+
+    def test_a_data_root_that_cant_name_a_file_is_ignored(self):
+        self.write("etc/docker/daemon.json", b'{"data-root": "/x\\ud800"}')
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("web"))
+        records = collect(self.root, ["containers"])
+        self.assertEqual(records[-1]["modules"]["containers"]["status"], "ok")
 
     def test_a_missing_hostconfig_is_a_gap_not_unprivileged(self):
         self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("web"))

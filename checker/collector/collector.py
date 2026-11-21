@@ -161,7 +161,21 @@ class Stream:
 
     def emit(self, obj):
         line = json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n"
-        self._gzip.write(line.encode("utf-8"))
+        try:
+            raw = line.encode("utf-8")
+            plain = obj.get("type") == "chunk" or "\\\\x" not in line
+        except UnicodeEncodeError:
+            plain = False
+        if not plain:
+            # Text holding bytes that aren't UTF-8 (a file name read with
+            # surrogateescape), or a backslash that could be read as such a
+            # byte's escape: every text in the object is written by
+            # _printable, which keeps different names different. Such a name
+            # can neither stop a module nor pass for another file. Chunks
+            # (file content) are valid UTF-8 or base64 and are never changed.
+            line = json.dumps(_escaped(obj), ensure_ascii=False, separators=(",", ":")) + "\n"
+            raw = line.encode("utf-8")
+        self._gzip.write(raw)
         kind = obj["type"]
         if kind == "record":
             self.counts["records"] += 1
@@ -995,9 +1009,11 @@ def list_directory(absolute, limit, run=None):
     return sorted(names), truncated
 
 
-def read_whole_lines(absolute, limit):
+def read_whole_lines(absolute, limit, errors="replace"):
     """Up to `limit` bytes of a text file, cut back to its last whole line if
-    longer. Returns (text, truncated), or (None, False) if unreadable."""
+    longer. Returns (text, truncated), or (None, False) if unreadable. File
+    lists read with errors="surrogateescape" keep a name that isn't UTF-8
+    exactly as the walk sees it."""
     try:
         raw, _ = open_regular_file(absolute)
     except (OSError, ValueError):
@@ -1010,7 +1026,7 @@ def read_whole_lines(absolute, limit):
     truncated = len(data) > limit
     if truncated:
         data = data[: data.rfind(b"\n", 0, limit) + 1]
-    return data.decode("utf-8", errors="replace"), truncated
+    return data.decode("utf-8", errors=errors), truncated
 
 
 def hash_file(run, absolute, expect=None):
@@ -2354,7 +2370,10 @@ def mount_table():
         mounts = []
         try:  # raw: path() itself consults this table
             with open(_raw_path("/proc/self/mountinfo"), "rb") as table:
-                text = table.read(4 * 1024 * 1024).decode("utf-8", "replace")
+                # surrogateescape, as the walk's own names: the kernel escapes
+                # only spaces, tabs, newlines and backslashes, so a byte that
+                # isn't UTF-8 comes raw, and must match the path it guards.
+                text = table.read(4 * 1024 * 1024).decode("utf-8", "surrogateescape")
         except OSError:
             text = ""
         for index, line in enumerate(text.splitlines()):
@@ -4548,7 +4567,7 @@ def verify_dpkg(run, module):
         text, list_cut = (
             (None, False)
             if store_refusal(run, absolute)
-            else read_whole_lines(absolute, 16 * 1024 * 1024)
+            else read_whole_lines(absolute, 16 * 1024 * 1024, "surrogateescape")
         )
         if text is None:
             unreadable_lists.append(name)  # its files go unchecked: a gap, said so
@@ -5244,7 +5263,7 @@ def _dpkg_list_paths(run, package_list):
     text, truncated = (
         (None, False)
         if store_refusal(run, package_list)
-        else read_whole_lines(package_list, 16 * 1024 * 1024)
+        else read_whole_lines(package_list, 16 * 1024 * 1024, "surrogateescape")
     )
     return [line for line in (text or "").splitlines() if line.startswith("/")], (
         text is not None and not truncated
@@ -5470,8 +5489,8 @@ def record_pam_owners(run, module, owners, complete, facts, links):
     server's own claims, used only to find the package: a false one finds
     nothing to match. Only paths the PAM listing itself walks count (the
     directory, then one or two levels: `*` matches one path part, never
-    "/"). A path or name too long, not UTF-8 or odd is left out and the
-    owners called incomplete. The summary always comes, so "no owner
+    "/"). A path too long or a package or architecture name that is odd is
+    left out and the owners called incomplete. The summary always comes, so "no owner
     recorded" is never mistaken for "owned by nothing"."""
     facts = facts or {}
     arches, contested = facts.get("arches") or {}, facts.get("contested") or set()
@@ -5531,13 +5550,9 @@ def _in_pam_dir(file, dirs):
 
 
 def _sendable_path(file):
-    if len(file) > 4096:
-        return False
-    try:
-        file.encode("utf-8")
-    except UnicodeEncodeError:  # a name that isn't UTF-8 (surrogate-escaped bytes)
-        return False
-    return True
+    # A name that isn't UTF-8 is fine: Stream.emit writes it as the walk's own
+    # records write the same path (collector-protocol.md).
+    return len(file) <= 4096
 
 
 # --- Files in unusual places (DESIGN.md §8.6) ---------------------------------------
@@ -6155,7 +6170,13 @@ def masked(text):
     choose), masked like log text; (masked text, what masking replaced)."""
     if text is None:
         return None, {}
-    raw = text if isinstance(text, bytes) else text.encode("utf-8", "surrogateescape")
+    if isinstance(text, bytes):
+        raw = text
+    else:
+        try:
+            raw = text.encode("utf-8", "surrogateescape")
+        except UnicodeEncodeError:  # a lone surrogate from JSON a server wrote
+            raw = text.encode("utf-8", "surrogatepass")
     # Every control character becomes a space: masking splits lines at
     # some of them (\r), which would part a label from its value.
     raw = raw.translate(_CONTROL_TO_SPACE)
@@ -6778,10 +6799,53 @@ def _read_int(absolute):
         return None
 
 
+def _encodable_path(text):
+    """Whether `text` can name a file here (a lone surrogate from JSON can't)."""
+    try:
+        text.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _escaped(value):
+    """`value` with every text in it (dict keys too) made sendable by
+    _printable; anything else as it is."""
+    if isinstance(value, str):
+        return _printable(value)
+    if isinstance(value, dict):
+        return {_escaped(k): _escaped(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_escaped(v) for v in value]
+    return value
+
+
+# collector-protocol.md, "Names that aren't UTF-8": a byte that isn't UTF-8 is
+# written \xHH (lowercase, 80-ff), and a run of literal backslashes right before
+# such a byte or before a literal "x" and two such hex digits is doubled. Reading
+# back: an odd run of backslashes before xHH ends in a byte, an even one doesn't.
+_RAW_BYTE = re.compile("[\udc80-\udcff]")
+_OTHER_SURROGATE = re.compile("[\ud800-\udc7f\udd00-\udfff]")
+# (?<!\\) starts a run only at its first backslash: without it, a long run that
+# isn't followed by an escape is tried from every place in it (quadratic time).
+_AMBIGUOUS = re.compile("(?<!\\\\)(\\\\+)(?=x[89a-f][0-9a-f]|[\udc80-\udcff])")
+_NEEDS_PRINTING = re.compile("[\ud800-\udfff]|\\\\x[89a-f][0-9a-f]")
+
+
 def _printable(name):
-    """A file name as text: bytes that aren't UTF-8 escaped, so they can be
-    sent (an interface name may hold any byte but '/', ':' and spaces)."""
-    return name.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+    """Text that can always be sent, with different texts kept different:
+    bytes that aren't UTF-8 (surrogateescape's U+DC80-U+DCFF) as \\xHH, any
+    other lone surrogate (from JSON a server wrote) as the bytes of its own
+    UTF-8 form, and literal backslashes doubled only where they could be read
+    as such an escape. Anything else, systemd's \\x2d among it, is unchanged."""
+    if not _NEEDS_PRINTING.search(name):
+        return name
+    name = _OTHER_SURROGATE.sub(
+        lambda m: "".join(chr(0xDC00 + b) for b in m.group().encode("utf-8", "surrogatepass")),
+        name,
+    )
+    name = _AMBIGUOUS.sub(lambda m: m.group(1) * 2, name)
+    return _RAW_BYTE.sub(lambda m: "\\x%02x" % (ord(m.group()) - 0xDC00), name)
 
 
 def _built_in(module_name):
@@ -6847,7 +6911,7 @@ def module_network(run):
             module,
             "interface",
             {
-                "name": _printable(name),
+                "name": name,  # Stream.emit writes names that aren't UTF-8
                 "flags": flags,
                 "promiscuous": bool(flags & IFF_PROMISC) if flags is not None else None,
                 "state": state.strip() if state else None,
@@ -6965,7 +7029,7 @@ def _log_manifest(run, module):
                 else "o"
             )
             data = {
-                "path": _printable(absolute),
+                "path": absolute,
                 "type": kind,
                 "size": info.st_size,
                 "inode": info.st_ino,
@@ -6974,7 +7038,7 @@ def _log_manifest(run, module):
             }
             if kind == "l":
                 try:
-                    data["link"] = _printable(os.readlink(path(absolute)))
+                    data["link"] = os.readlink(path(absolute))
                 except OSError:
                     data["link"] = None
             run.stream.record(module, "log_file", data)
@@ -7039,7 +7103,7 @@ def _mac_state(run, module):
         for line in text.splitlines()[:5000]:
             name, _, mode = line.rpartition(" (")
             if name:
-                profiles[_printable(name)] = mode.rstrip(")")
+                profiles[name] = mode.rstrip(")")
         apparmor = {"profiles": profiles}
     elif os.path.isdir(path("/sys/kernel/security/apparmor")):
         apparmor = {"profiles": {}, "unreadable": True}
@@ -8992,7 +9056,12 @@ def _docker_roots():
     settings, _ = read_json(DOCKER_DAEMON_JSON, 1024 * 1024)
     if isinstance(settings, dict):
         chosen = settings.get("data-root") or settings.get("graph")
-        if isinstance(chosen, str) and chosen.startswith("/") and ".." not in chosen.split("/"):
+        if (
+            isinstance(chosen, str)
+            and chosen.startswith("/")
+            and ".." not in chosen.split("/")
+            and _encodable_path(chosen)
+        ):
             roots = [chosen.rstrip("/") or "/"]
     found = []
     for root in roots:

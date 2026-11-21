@@ -152,8 +152,9 @@ snapshot, verification against recorded package data, and the checks:
    every PAM update reads as a break-in. An organization that allows no outbound access turns it
    off or names its mirror.
 2. **A downgrade to an older official version.** The module matches a real signed package, but an
-   older one than at the baseline (an intruder could put back a version with a known flaw). I'd
-   say **medium**, "PAM was downgraded to an older Ubuntu package", rather than low.
+   older one than at the baseline (an intruder could put back a version with a known flaw).
+   **DECIDED medium (John, 2026-11-21):** "PAM was moved back to an older Ubuntu package", naming
+   both versions.
 3. **Verify every module at each collection, or only the changed ones?** Checking all of them at
    the first collection would also catch a module trojaned **before** the baseline, which today
    nothing catches. With the cache the cost is one fetch per package version. I'd say all of them,

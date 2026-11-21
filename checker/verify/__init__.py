@@ -60,6 +60,9 @@ class Official:
     signer: str = ""
     reason: str = ""
     cached: bool = field(default=False, compare=False)
+    # The failure was this machine's (no network, out of time, no gpgv, an
+    # error), not the package's: worth asking again later, never stored.
+    transient: bool = field(default=False, compare=False)
 
     @property
     def found(self) -> bool:
@@ -113,24 +116,34 @@ class Verifier:
         ubuntu_snapshot: str | None = deb.SNAPSHOT,
         launchpad: str | None = deb.LAUNCHPAD,
         rpm_mirrors: dict[str, dict] | None = None,
+        lists_dir: Path | None = None,
+        vaults: bool = True,
     ):
         self.cache_dir = cache_dir
         self.fetcher = fetcher or HttpFetcher(deadline)
-        self.ubuntu = deb.Ubuntu(self.fetcher, ubuntu_archive, ubuntu_snapshot or "", launchpad)
-        self.rpm = rpm.Rpm(self.fetcher, rpm_mirrors)
+        self.ubuntu = deb.Ubuntu(
+            self.fetcher, ubuntu_archive, ubuntu_snapshot or "", launchpad, lists_dir=lists_dir
+        )
+        self.rpm = rpm.Rpm(self.fetcher, rpm_mirrors, vaults=vaults)
 
     def package(self, lookup: Lookup) -> Official:
         try:
             return self._package(lookup)
         except Exception as exc:  # noqa: BLE001 - the contract: a reason, never an error
-            return Official(lookup, reason=f"couldn't check it: {type(exc).__name__}: {exc}"[:300])
+            return Official(
+                lookup,
+                reason=f"couldn't check it: {type(exc).__name__}: {exc}"[:300],
+                transient=True,
+            )
 
     def _package(self, lookup: Lookup) -> Official:
         cached = self._cached(lookup)
         if cached is not None:
             return cached
         if gpg.gpgv_path() is None:
-            return Official(lookup, reason="gpgv isn't installed on the checker's machine")
+            return Official(
+                lookup, reason="gpgv isn't installed on the checker's machine", transient=True
+            )
         try:
             if lookup.system == "ubuntu":
                 files, source, signer = self.ubuntu.files(
@@ -145,9 +158,9 @@ class Verifier:
             else:
                 return Official(lookup, reason=f"{show(lookup.system)} isn't covered")
         except (deb.PackageError, rpm.PackageError) as exc:
-            return Official(lookup, reason=str(exc))
+            return Official(lookup, reason=str(exc), transient=getattr(exc, "transient", False))
         except FetchError as exc:
-            return Official(lookup, reason=f"couldn't download: {exc}")
+            return Official(lookup, reason=f"couldn't download: {exc}", transient=True)
         official = Official(lookup, files, source, signer)
         self._keep(official)
         return official

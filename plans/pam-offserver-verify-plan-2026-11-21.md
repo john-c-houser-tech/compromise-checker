@@ -196,7 +196,7 @@ snapshot, verification against recorded package data, and the checks:
 - **V.3 Collector: owner hints. DONE 2026-11-21** (below). The owner and architecture of each file in a PAM module
   directory (reusing #188's `record_pam_owners`), kept out of the comparison. Collector version
   bump.
-- **V.4 The step and its settings:** run after collection, save `official_files`, the on/off and
+- **V.4 The step and its settings: DONE 2026-11-21** (below). run after collection, save `official_files`, the on/off and
   mirror settings, notes in the report and web pages.
 - **Time for the step (V.4, from a side note on #210):** V.2 gives the whole run one deadline
   (about a minute). A server on the newest version takes 2-5 seconds; one an update behind,
@@ -282,6 +282,61 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
 - **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
   Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
 - **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.
+
+## V.4 as built (2026-11-21)
+
+- `checker/official.py` is the step. `analyze()` takes the collection's stored results when they
+  were made against the same baseline; otherwise, given a verifier, it checks now and stores them
+  encrypted beside the bundle (derived kind `official`). Scheduled runs and `checker analyze`
+  give it one (each server its own `verify.seconds_per_server`, default 60, and the shared caches);
+  a report rebuilt gives none, so it never downloads. The results reach the checks as
+  `Context.official`; V.5 uses them.
+- Checked: files added or changed in content since the baseline in the PAM module directories
+  themselves (`/etc/security/` isn't one). Each result: matched, differs, absent, link or
+  not_checked with its reason, plus the package, version and architecture asked about, the
+  baseline's version and whether this one is older (by dpkg's or rpm's ordering).
+- "Not checked" before anything is fetched: no baseline; the system or release isn't the
+  baseline's; no owner recorded; `several`; an owner that isn't the baseline's; the package list
+  not collected whole; not exactly one installed version of the owner.
+- **Baselines from 0.1.3 have no owners** (side note on V.4): the owner can't be compared, so a
+  file that was there at the baseline is checked only if its owning package was installed then
+  too, the version is still compared with the baseline's package list, and the assessment's notes
+  say an owner swap can't be ruled out until a new baseline is taken. **DECIDED (John,
+  2026-11-21): the note is enough;** the checker doesn't prompt for a new baseline after an
+  upgrade (that would also accept whatever changed since the last one).
+- Ubuntu's signed lists are kept on disk (`CHECKER_HOME/cache/signed-lists`) and checked again
+  every time they are used: an InRelease for six hours (a dated copy's for good), an index by
+  its hash. Live: the first lookup of an older version took 22 s, the next server's 0.9 s.
+- Settings: `verify.enabled` (on), `verify.seconds_per_server`, `verify.ubuntu_archive`,
+  `verify.rocky`, `verify.almalinux`. `checker config show` and the security and privacy policy
+  (sections 2 and 10) say what is downloaded and that no server's name, finding or evidence is
+  sent.
+- The assessment carries `official_files` (counts by outcome, reasons) and a note for every
+  reason a changed module wasn't checked. Tests never download (an autouse guard).
+- **From #213's two reviews:**
+  - A changed module the baseline recorded no owner for (its owner list otherwise complete) is
+    not checked; a baseline owner list that wasn't complete counts as unknown, like 0.1.3's.
+  - Every result says the baseline's version and whether this one is older, `None` when not
+    known (an incomplete baseline package list, say). **For V.5: only `older_than_baseline is
+    False` may let a change count as an update**, and a module added by a package that wasn't
+    installed at the baseline (`new_package`) is never "updated by the distribution".
+  - The package's architecture is held to the baseline's; a package listed twice for one name
+    and architecture (snapshot version 18 marks it) isn't checked.
+  - Rocky Linux and AlmaLinux are held to the baseline's major release only (9.5 to 9.6 is an
+    ordinary update); Ubuntu to its whole release.
+  - Each result records the hash it compared (V.5 should require it to be the current file's).
+  - Failures on this machine's side (network, time, gpgv, an error) are marked `transient`,
+    stored, and asked again whenever a verifier is given. In one run, once a host finds the
+    distributions' servers out of reach, its later hosts aren't asked (checked next run).
+  - One lookup per package version, however many modules it changed. Nothing the server sends
+    can stop the step: each file's check fails alone, as "not checked".
+  - The lists cache keeps a list only once it has checked out, drops a kept copy that no longer
+    does (fetching once more), reads at most the size limit and never through a link.
+  - The clock for a server starts at its first download, not before its bundle is parsed.
+  - `verify.older_versions` (on) turns off the dated copies, Launchpad and the vaults; the
+    policy and `config show` say a mirror replaces only the current lists, and what a request
+    reveals (release, version, architecture, the User-Agent, and by its timing that some
+    server's PAM changed).
 
 ## V.3 as built (2026-11-21)
 

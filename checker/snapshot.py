@@ -24,10 +24,10 @@ from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Tr
 
 # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks read
 # whole, fail2ban's banned addresses; 15: nft's JSON beside its text
-SNAPSHOT_VERSION = 17
+SNAPSHOT_VERSION = 18
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve; 16: a /run file's content no longer brings back its
-# inode and times; 17: PAM modules' owners (#189)
+# inode and times; 17: PAM modules' owners (#189); 18: packages listed twice marked
 
 MAX_PAM_OWNERS = 2000  # the collector sends at most this many (#189)
 
@@ -1330,9 +1330,13 @@ class SnapshotBuilder:
                 # Several at once: rpm's imported keys (each a gpg-pubkey,
                 # no architecture), kernels installed side by side.
                 key = f"{key} {data.get('version')}"
-            self.section("packages").items[key] = {
-                k: data.get(k) for k in ("manager", "version", "installed")
-            }
+            items = self.section("packages").items
+            entry = {k: data.get(k) for k in ("manager", "version", "installed")}
+            if key in items:
+                # Two entries for one name and architecture (an interrupted
+                # dnf, say): which version is installed isn't known (#189).
+                entry["duplicate"] = True
+            items[key] = entry
         elif name == "signing_key" and data.get("path"):
             self.section("software_files").items[data["path"]] = dict(
                 _meta(data), record="signing_key"

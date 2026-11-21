@@ -57,10 +57,13 @@ class HttpFetcher:
     timeout)."""
 
     def __init__(self, deadline: float = 60.0):
-        self.ends = time.monotonic() + deadline
+        self.deadline = deadline
+        self.ends: float | None = None  # set at the first download, not before
         self.opener = urllib.request.build_opener(_SameHost())
 
     def left(self) -> float:
+        if self.ends is None:
+            self.ends = time.monotonic() + self.deadline
         return self.ends - time.monotonic()
 
     def get(self, url: str, limit: int, first: int | None = None) -> bytes | None:

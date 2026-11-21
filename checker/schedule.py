@@ -527,6 +527,7 @@ def run(
     from checker.collect import collect_hosts
     from checker.credentials import password_for
     from checker.evidence import Store, database_file
+    from checker.official import unreachable, verifier_for
     from checker.packs.choice import for_host
     from checker.packs.store import in_force
     from checker.report import visible, write_report
@@ -604,6 +605,7 @@ def run(
                         signal.signal(signal.SIGTERM, before_sigterm)  # asyncio's went with it
             by_host = {o.host: o for o in outcomes}
             analysed = []
+            verify_down = False  # the distributions' servers out of reach: stop asking
             for host in hosts:
                 outcome = by_host.get(host.name)
                 item = HostResult(host.name, outcome.status if outcome else "not run")
@@ -632,7 +634,11 @@ def run(
                         prior_for(host.name, config, inventory),
                         whitelist_for_host(base, host.name, inventory),
                         *packs_for(host.name),
+                        # Each host its own time, the caches shared; none once the
+                        # distributions' servers proved out of reach this run.
+                        verifier=None if verify_down else verifier_for(config.verify, base),
                     )
+                    verify_down = verify_down or unreachable(assessment)
                 except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
                     item.problem = f"not analysed ({type(exc).__name__}: {visible(str(exc), 300)})"
                     item.alerts.append(f"{host.name}: not analysed ({type(exc).__name__})")

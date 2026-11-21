@@ -148,8 +148,9 @@ snapshot, verification against recorded package data, and the checks:
 
 ## Open decisions
 
-1. **On by default?** I'd say yes: it only fetches public files, and without it every PAM update
-   is a break-in. An organization that allows no outbound access turns it off or names its mirror.
+1. **On by default: DECIDED yes (John, 2026-11-21).** It only fetches public files, and without it
+   every PAM update reads as a break-in. An organization that allows no outbound access turns it
+   off or names its mirror.
 2. **A downgrade to an older official version.** The module matches a real signed package, but an
    older one than at the baseline (an intruder could put back a version with a known flaw). I'd
    say **medium**, "PAM was downgraded to an older Ubuntu package", rather than low.

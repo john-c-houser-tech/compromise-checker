@@ -234,6 +234,13 @@ class Ubuntu:
             raise PackageError(f"Ubuntu {show(release)} isn't covered")
         if arch not in ARCHES + ("all",):
             raise PackageError(f"{show(arch)} isn't covered yet")
+        if "+esm" in version:
+            # Ubuntu Pro's Extended Security Maintenance: its packages are on
+            # esm.ubuntu.com, behind a Pro token, signed with another key.
+            raise PackageError(
+                "an Ubuntu Pro (ESM) version: ESM packages need a Pro token to download, "
+                "so the checker can't check them yet"
+            )
         lists_arch = "amd64" if arch == "all" else arch  # "all" packages are in each list
         problems: list[str] = []
         suites = [codename + "-security", codename + "-updates", codename]

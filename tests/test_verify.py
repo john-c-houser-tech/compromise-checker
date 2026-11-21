@@ -1068,3 +1068,12 @@ def test_fetcher_deadline_redirects_and_partial(slow_web):
         fetcher.get(f"{slow_web}/to-other", 1000)
     with pytest.raises(FetchError, match="refused a redirect"):
         fetcher.get(f"{slow_web}/to-ftp", 1000)
+
+
+@needs_gpgv
+def test_an_ubuntu_pro_esm_version_says_so_without_searching():
+    site = Site()
+    esm = Lookup("ubuntu", "22.04", "libpam-modules", "1.4.0-11ubuntu2.8+esm1", "amd64")
+    official = ubuntu_verifier(site).package(esm)
+    assert "Ubuntu Pro (ESM)" in official.reason
+    assert site.asked == []

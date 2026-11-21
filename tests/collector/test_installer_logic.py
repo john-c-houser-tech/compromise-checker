@@ -693,21 +693,35 @@ class WebAddress(unittest.TestCase):
     def test_a_silent_connection_cannot_hold_the_check_up(self):
         if os.geteuid() != 0:
             self.skipTest("port 80 needs root")
+        # The silent connection is opened from inside the check, just before its own request,
+        # so the server is surely listening: a fixed sleep raced the server's short life.
+        idle = []
+        real_page_from = installer._page_from
+
+        def page_from(*args, **kwargs):
+            idle.append(socket.create_connection(("127.0.0.1", 80)))  # says nothing, ever
+            return real_page_from(*args, **kwargs)
+
         result = []
         thread = threading.Thread(
             target=lambda: result.append(
                 installer.leads_here("c.example.org", {"127.0.0.1"}, seconds=2)
             )
         )
-        started = installer.time.monotonic()
-        thread.start()
-        installer.time.sleep(0.5)
-        idle = socket.create_connection(("127.0.0.1", 80))  # says nothing, ever
-        thread.join(15)
-        stuck = thread.is_alive()
-        idle.close()
-        thread.join(30)
+        installer._page_from = page_from
+        try:
+            started = installer.time.monotonic()
+            thread.start()
+            thread.join(15)
+            stuck = thread.is_alive()
+            for connection in idle:
+                connection.close()
+            thread.join(30)
+        finally:
+            installer._page_from = real_page_from
+        self.assertEqual(len(idle), 1)
         self.assertFalse(stuck)
+        self.assertEqual(result, [True])
         self.assertLess(installer.time.monotonic() - started, 20)
 
     def test_a_loopback_hosts_entry_for_the_name_is_found(self):

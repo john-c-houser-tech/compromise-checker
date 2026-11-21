@@ -590,6 +590,14 @@ complete, the mapped directories, and whether a limit — the walk's entry or
 time limit, or the findings limit — cut the pass short. With no package
 manager, nothing is called unowned.
 
+For each file in a PAM module directory, a `pam_module_owner` record names
+the package that owns it and, where dpkg's list name or rpm's header gives
+one, that package's architecture (at most 2,000), and a `pam_owners_summary`
+always follows, saying whether the owners are complete. These are the
+server's own claims: the controller uses them only to find the distribution's
+official package and compare a changed module against it (#189), never as
+evidence.
+
 ## `unusual_files`
 
 **Why:** files in the places intruders use: tools dropped in scratch

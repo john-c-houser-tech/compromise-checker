@@ -301,7 +301,23 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
   package to match; 2 and 3 (made-up, rebuilt versions) aren't in the signed lists; 4 and 5
   (journal, clock) are no longer used; 6 (pam_permit over pam_unix) is `differs`; 7 (another
   release) is "the release isn't the baseline's"; 8 and 10 (tampering, hostile packages) fail in
-  the verifier. Each has a test in `tests/test_verify.py` or `tests/test_official.py`.
+  the verifier. Each has a test in `tests/test_verify.py` or `tests/test_official.py`, on built
+  snapshots and a fake verifier; the real collector on real servers is V.6's proof.
+- **From #214's two reviews:**
+  - A version older than the newest seen since the baseline (the previous collection's, or
+    what its results had seen, carried on from one to the next) is a `downgrade` too, though
+    newer than the baseline's: going back from a fix to a still-vulnerable version.
+  - The package's own file whose mode, uid or gid changed stays high (the verifier compares
+    content only).
+  - The update's one finding joins no group in scoring (scoring version 5), so it can't tie
+    other findings about its paths together and cut them.
+  - A whitelist rule must name `differs` to cover it; the high findings that couldn't be
+    checked now have variants (`added`, `changed`), so rules for them pin them.
+  - A host's OS id that isn't text can't stop the check; reasons say what kept a file from
+    being checked; `new_package` only when the baseline's complete list lacked the package; the
+    same version with its files replaced says so.
+  - Once a run finds the servers out of reach, its later hosts still get answers from what is
+    cached (no downloads), instead of none.
 - End to end: the same update that read as one high finding per module without the results now
   reads as one low finding, and the host's probability drops.
 

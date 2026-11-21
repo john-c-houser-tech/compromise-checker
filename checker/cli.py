@@ -2116,7 +2116,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 assessment = analyze(
                     store, host, identity, recipients, args.bundle, prior, whitelists[host],
                     *packs_for(host),
-                    verifier=None if verify_down else verifier_for(config.verify, base),
+                    verifier=verifier_for(config.verify, base, cached_only=verify_down),
                 )  # fmt: skip
                 verify_down = verify_down or unreachable(assessment)
                 _print_assessment(assessment, args)

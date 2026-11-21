@@ -72,6 +72,8 @@ def verify_pam(
     since_baseline: dict[str, Any] | None,
     verifier: Verifier,
     baseline_id: str | None,
+    previous: Snapshot | None = None,
+    previous_results: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """{"version", "baseline_id", "checked_at", "files": {path: result}}:
     each result has an "outcome" (matched, differs, absent, link or
@@ -80,6 +82,7 @@ def verify_pam(
     time, gpgv) and is asked again the next time a verifier is given."""
     files = {}
     asked: dict[Lookup, Any] = {}  # one package update changes many modules: ask once
+    seen = _newest_seen(previous, previous_results)
 
     def package(lookup: Lookup):
         if lookup not in asked:
@@ -88,7 +91,7 @@ def verify_pam(
 
     for target in targets(snapshot, since_baseline):
         try:
-            files[target.path] = _check(target, snapshot, baseline, package)
+            files[target.path] = _check(target, snapshot, baseline, package, seen, previous)
         except Exception as exc:  # noqa: BLE001 - nothing the server sends may stop the step
             files[target.path] = {
                 "outcome": "not_checked",
@@ -104,7 +107,14 @@ def verify_pam(
     }
 
 
-def _check(target: Target, snapshot: Snapshot, baseline: Snapshot | None, package) -> dict:
+def _check(
+    target: Target,
+    snapshot: Snapshot,
+    baseline: Snapshot | None,
+    package,
+    seen: dict[tuple[str, str], str] | None = None,
+    previous: Snapshot | None = None,
+) -> dict:
     # The hash compared, so the checks can tell the result is for this very file.
     base = {"how": target.how, "sha256": target.sha256}
 
@@ -166,8 +176,26 @@ def _check(target: Target, snapshot: Snapshot, baseline: Snapshot | None, packag
     )
     if owner_unknown:
         result["baseline_owner_unknown"] = True
-    if target.how == "added" and earlier is None:
+    if target.how == "added" and earlier is None and _complete(baseline, "packages"):
         result["new_package"] = True  # not installed at the baseline: not an update
+    # The newest version of this package seen since the baseline (its own, the
+    # previous collection's, what that collection's results had seen): going
+    # back below it is a downgrade too, though still newer than the baseline's.
+    newest = _newest(
+        system_id,
+        [
+            v
+            for v in (
+                version,
+                earlier[1] if earlier else None,
+                _previous_version(previous, owner, arch),
+                (seen or {}).get((owner["package"], arch)),
+            )
+            if v
+        ],
+    )
+    result["newest_seen"] = newest
+    result["older_than_seen"] = _older(system_id, version, newest) if newest else None
     official = package(Lookup(system_id, release, owner["package"], version, arch))
     if not official.found:
         return dict(
@@ -175,6 +203,37 @@ def _check(target: Target, snapshot: Snapshot, baseline: Snapshot | None, packag
         )
     outcome = compare_file(official, target.path, target.sha256, _merged_dirs(snapshot))
     return dict(result, outcome=outcome, source=official.source, signer=official.signer)
+
+
+def _newest_seen(previous: Snapshot | None, results: dict[str, Any] | None) -> dict:
+    """{(package, arch): the newest version the previous collection's results had seen}."""
+    found: dict[tuple[str, str], str] = {}
+    for result in ((results or {}).get("files") or {}).values():
+        if not isinstance(result, dict):
+            continue
+        package, arch = result.get("package"), result.get("arch")
+        newest = result.get("newest_seen") or result.get("version")
+        if isinstance(package, str) and isinstance(arch, str) and isinstance(newest, str):
+            found[(package, arch)] = newest
+    return found
+
+
+def _previous_version(previous: Snapshot | None, owner: dict, arch: str) -> str | None:
+    if previous is None or not _complete(previous, "packages"):
+        return None
+    installed = _installed(previous, owner)
+    return installed[1] if installed and installed[2] == arch else None
+
+
+def _newest(system_id: str, versions: list[str]) -> str | None:
+    newest = None
+    for version in versions:
+        try:
+            if newest is None or compare(SYSTEMS[system_id], version, newest) > 0:
+                newest = version
+        except VersionError:
+            return None  # can't be ordered: not known
+    return newest
 
 
 def _older(system_id: str, version: str, earlier: str) -> bool | None:
@@ -294,9 +353,22 @@ def unreachable(assessment: dict[str, Any] | None) -> bool:
     return bool(found.get("transient")) and not checked
 
 
-def verifier_for(settings: Any, home: Path, deadline: float | None = None) -> Verifier | None:
+class _NoDownloads:
+    """A fetcher that downloads nothing: what is already cached still answers."""
+
+    def get(self, url, limit, first=None):
+        from checker.verify.fetch import FetchError
+
+        raise FetchError("not asked: the distributions' servers were out of reach this run")
+
+
+def verifier_for(
+    settings: Any, home: Path, deadline: float | None = None, cached_only: bool = False
+) -> Verifier | None:
     """The Verifier the settings ask for (`verify` in the configuration),
-    or None when it is turned off."""
+    or None when it is turned off. `cached_only`: answers only from what is
+    already kept here (a run whose earlier host found the servers out of
+    reach), its misses marked to be asked again."""
     if settings is None or not settings.enabled:
         return None
     from checker.verify import deb
@@ -309,6 +381,7 @@ def verifier_for(settings: Any, home: Path, deadline: float | None = None) -> Ve
     older = settings.older_versions
     return Verifier(
         home / "cache" / "official-files",
+        fetcher=_NoDownloads() if cached_only else None,
         deadline=deadline if deadline is not None else settings.seconds_per_server,
         ubuntu_archive=settings.ubuntu_archive or deb.ARCHIVE,
         ubuntu_snapshot=deb.SNAPSHOT if older else None,

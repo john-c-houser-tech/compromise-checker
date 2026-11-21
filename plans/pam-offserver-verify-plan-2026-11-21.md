@@ -189,7 +189,17 @@ snapshot, verification against recorded package data, and the checks:
 - **V.4 The step and its settings:** run after collection, save `official_files`, the on/off and
   mirror settings, notes in the report and web pages.
 - **V.5 The check:** `pam.changes` uses the results. The tests are the ten attacks above, end to
-  end.
+  end, plus the ones below.
+- **Held to the baseline (V.4/V.5, from the #210 security review).** Every field the verifier
+  is given is the server's claim, so a match only proves "a genuine file for the system,
+  release, package and version the server named". A 24.04 server could copy 22.04's genuine
+  `pam_unix.so` into place and claim 22.04, or claim an old version with a known flaw for one
+  module only. So the step asks only with the **system, release and architecture an earlier
+  collection recorded**, and doesn't explain the change (stays high, with the reason) when the
+  current collection says otherwise. A module whose **owner package differs** from the
+  baseline's, or whose version is lower than the baseline's (by real dpkg/rpm ordering), isn't
+  explained either: the version case is decision 2's medium. Tests: the release switch, mixed
+  versions inside one package, and an owner swap.
 - **V.6 Docs and proof:** `docs/checks.md`, the security and privacy policy, the install page's
   outbound hosts, and a scoring calibration rerun. Then a Linode proof on Ubuntu 24.04 and Rocky 9
   (a real PAM update should read low, a swapped module high). Cents, with one OK from John.
@@ -246,3 +256,21 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
 - **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
   Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
 - **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.
+
+## V.2 as built (PR #210, 2026-11-21)
+
+- **Where to look, for rpm:** the standard file name, without downloading the repository list:
+  `<repo>/BaseOS|AppStream/x86_64/os/Packages/<name>-<version>-<release>.<arch>.rpm`. Rocky puts
+  packages in a folder per first letter (`Packages/p/`), AlmaLinux in one flat folder. The
+  current repositories first, then the vault, starting with the minor that a release such as
+  `el9_8.1` names.
+- **`%ghost` files** (listed in a package, never shipped, so no digest) are skipped. sssd-client,
+  which ships `pam_sss.so`, has one.
+- **Ubuntu:** the archive over HTTPS. `main` in every suite before `universe`, index files by
+  their hash name first (a mirror part-way through an update still has them), and a list that
+  fails is skipped and named in the reason.
+- **Downloads:** one deadline for the run, held even while a server is slow to send its headers,
+  and redirects only within the same host, never away from HTTPS.
+- **Not covered, all left high:** Ubuntu Pro/ESM versions, AlmaLinux 10's `x86_64_v2` builds, and
+  arm64. If Ubuntu ever signs with a second, new key, every Ubuntu check fails until that key is
+  pinned.

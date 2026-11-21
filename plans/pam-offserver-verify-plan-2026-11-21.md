@@ -1,6 +1,6 @@
 # Checking changed PAM modules against the distribution's own packages (2026-11-21)
 
-Issue #189, for #185. Draft 1, for John to read before any code.
+Issue #189, for #185. Draft 1; all four open decisions settled by John on 2026-11-21.
 
 ## The problem
 
@@ -161,7 +161,9 @@ snapshot, verification against recorded package data, and the checks:
    nothing catches. With the cache the cost is one fetch per package version. **DECIDED (John,
    2026-11-21): all of them, as step V.7, after the changed-only version is proven.**
 4. **Later, `package.changed`:** the same check could cover every critical path it watches (sshd,
-   sudo, the loader, and so on). This plan stops at PAM.
+   sudo, the loader, and so on). **DECIDED (John, 2026-11-21): this plan stays PAM-only.** After
+   V.7 works, `package.changed` gets its own issue, decided then from how the PAM version holds up
+   in use.
 
 ## Steps (one pull request each)
 

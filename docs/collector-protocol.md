@@ -91,14 +91,24 @@ stores it with the evidence; the manifest carries the version string only.
 ## 3. Result stream
 
 stdout carries a single **gzip** stream. Decompressed, it is **UTF-8 JSON
-Lines**: one JSON object per line, each with a `type` field. A file name (or
-other text) holding bytes that aren't UTF-8 is sent with those bytes written
-as `\xff`, so such a name can never stop a module. A real name spelled with
-a backslash and `x` reads the same, so two such files in one directory share
-one entry and one can mask the other's changes; a new name like that is
-itself reported (in a PAM module directory, as a high finding). Escaping
-every backslash would remove that, but would rename every systemd unit
-written with `\x2d` once, as a burst of changes.
+Lines**: one JSON object per line, each with a `type` field.
+
+**Names that aren't UTF-8.** A file name (or other text) may hold bytes that
+aren't UTF-8. Every text outside a chunk's data is written so that it can
+always be sent and two different names are never written the same:
+
+- a byte that isn't UTF-8 is written `\xHH` (lowercase hex, `80` to `ff`);
+- a run of literal backslashes directly before such a byte, or before a
+  literal `x` and two hex digits `80` to `ff`, is written doubled;
+- any other lone surrogate (from JSON a server wrote) is written as the
+  bytes of its own UTF-8 form, by the first rule.
+
+Reading back: before `xHH` (`80` to `ff`), an odd run of backslashes ends in
+that byte and an even run is literal backslashes (halved) and then the text
+`xHH`. Every other backslash is itself. So ordinary names, systemd's `\x2d`
+among them, are sent exactly as they are. (Without the second rule, a file
+literally named `pam_\xff.so` would pass for one named with the byte 0xff,
+and one could hide the other.)
 
 ```
 manifest                       exactly once, first

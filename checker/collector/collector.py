@@ -163,13 +163,18 @@ class Stream:
         line = json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n"
         try:
             raw = line.encode("utf-8")
+            plain = obj.get("type") == "chunk" or "\\\\x" not in line
         except UnicodeEncodeError:
-            # A name holding bytes that aren't UTF-8 (read with surrogateescape):
-            # sent with those bytes escaped ("\xff", as _printable does), never
-            # dropped and never a crash. A file named so must not be able to stop
-            # a module, or an intruder could hide everything after it.
-            line = json.dumps(_escaped(obj), ensure_ascii=False, separators=(",", ":"))
-            raw = (line + "\n").encode("utf-8")
+            plain = False
+        if not plain:
+            # Text holding bytes that aren't UTF-8 (a file name read with
+            # surrogateescape), or a backslash that could be read as such a
+            # byte's escape: every text in the object is written by
+            # _printable, which keeps different names different. Such a name
+            # can neither stop a module nor pass for another file. Chunks
+            # (file content) are valid UTF-8 or base64 and are never changed.
+            line = json.dumps(_escaped(obj), ensure_ascii=False, separators=(",", ":")) + "\n"
+            raw = line.encode("utf-8")
         self._gzip.write(raw)
         kind = obj["type"]
         if kind == "record":
@@ -2363,7 +2368,10 @@ def mount_table():
         mounts = []
         try:  # raw: path() itself consults this table
             with open(_raw_path("/proc/self/mountinfo"), "rb") as table:
-                text = table.read(4 * 1024 * 1024).decode("utf-8", "replace")
+                # surrogateescape, as the walk's own names: the kernel escapes
+                # only spaces, tabs, newlines and backslashes, so a byte that
+                # isn't UTF-8 comes raw, and must match the path it guards.
+                text = table.read(4 * 1024 * 1024).decode("utf-8", "surrogateescape")
         except OSError:
             text = ""
         for index, line in enumerate(text.splitlines()):
@@ -6059,7 +6067,13 @@ def masked(text):
     choose), masked like log text; (masked text, what masking replaced)."""
     if text is None:
         return None, {}
-    raw = text if isinstance(text, bytes) else text.encode("utf-8", "surrogateescape")
+    if isinstance(text, bytes):
+        raw = text
+    else:
+        try:
+            raw = text.encode("utf-8", "surrogateescape")
+        except UnicodeEncodeError:  # a lone surrogate from JSON a server wrote
+            raw = text.encode("utf-8", "surrogatepass")
     # Every control character becomes a space: masking splits lines at
     # some of them (\r), which would part a label from its value.
     raw = raw.translate(_CONTROL_TO_SPACE)
@@ -6694,10 +6708,30 @@ def _escaped(value):
     return value
 
 
+# collector-protocol.md, "Names that aren't UTF-8": a byte that isn't UTF-8 is
+# written \xHH (lowercase, 80-ff), and a run of literal backslashes right before
+# such a byte or before a literal "x" and two such hex digits is doubled. Reading
+# back: an odd run of backslashes before xHH ends in a byte, an even one doesn't.
+_RAW_BYTE = re.compile("[\udc80-\udcff]")
+_OTHER_SURROGATE = re.compile("[\ud800-\udc7f\udd00-\udfff]")
+_AMBIGUOUS = re.compile("(\\\\+)(?=x[89a-f][0-9a-f]|[\udc80-\udcff])")
+_NEEDS_PRINTING = re.compile("[\ud800-\udfff]|\\\\x[89a-f][0-9a-f]")
+
+
 def _printable(name):
-    """A file name as text: bytes that aren't UTF-8 escaped, so they can be
-    sent (an interface name may hold any byte but '/', ':' and spaces)."""
-    return name.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+    """Text that can always be sent, with different texts kept different:
+    bytes that aren't UTF-8 (surrogateescape's U+DC80-U+DCFF) as \\xHH, any
+    other lone surrogate (from JSON a server wrote) as the bytes of its own
+    UTF-8 form, and literal backslashes doubled only where they could be read
+    as such an escape. Anything else, systemd's \\x2d among it, is unchanged."""
+    if not _NEEDS_PRINTING.search(name):
+        return name
+    name = _OTHER_SURROGATE.sub(
+        lambda m: "".join(chr(0xDC00 + b) for b in m.group().encode("utf-8", "surrogatepass")),
+        name,
+    )
+    name = _AMBIGUOUS.sub(lambda m: m.group(1) * 2, name)
+    return _RAW_BYTE.sub(lambda m: "\\x%02x" % (ord(m.group()) - 0xDC00), name)
 
 
 def _built_in(module_name):
@@ -6763,7 +6797,7 @@ def module_network(run):
             module,
             "interface",
             {
-                "name": _printable(name),
+                "name": name,  # Stream.emit writes names that aren't UTF-8
                 "flags": flags,
                 "promiscuous": bool(flags & IFF_PROMISC) if flags is not None else None,
                 "state": state.strip() if state else None,
@@ -6881,7 +6915,7 @@ def _log_manifest(run, module):
                 else "o"
             )
             data = {
-                "path": _printable(absolute),
+                "path": absolute,
                 "type": kind,
                 "size": info.st_size,
                 "inode": info.st_ino,
@@ -6890,7 +6924,7 @@ def _log_manifest(run, module):
             }
             if kind == "l":
                 try:
-                    data["link"] = _printable(os.readlink(path(absolute)))
+                    data["link"] = os.readlink(path(absolute))
                 except OSError:
                     data["link"] = None
             run.stream.record(module, "log_file", data)
@@ -6955,7 +6989,7 @@ def _mac_state(run, module):
         for line in text.splitlines()[:5000]:
             name, _, mode = line.rpartition(" (")
             if name:
-                profiles[_printable(name)] = mode.rstrip(")")
+                profiles[name] = mode.rstrip(")")
         apparmor = {"profiles": profiles}
     elif os.path.isdir(path("/sys/kernel/security/apparmor")):
         apparmor = {"profiles": {}, "unreadable": True}

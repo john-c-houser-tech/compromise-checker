@@ -113,10 +113,13 @@ class Verifier:
         ubuntu_snapshot: str | None = deb.SNAPSHOT,
         launchpad: str | None = deb.LAUNCHPAD,
         rpm_mirrors: dict[str, dict] | None = None,
+        lists_dir: Path | None = None,
     ):
         self.cache_dir = cache_dir
         self.fetcher = fetcher or HttpFetcher(deadline)
-        self.ubuntu = deb.Ubuntu(self.fetcher, ubuntu_archive, ubuntu_snapshot or "", launchpad)
+        self.ubuntu = deb.Ubuntu(
+            self.fetcher, ubuntu_archive, ubuntu_snapshot or "", launchpad, lists_dir=lists_dir
+        )
         self.rpm = rpm.Rpm(self.fetcher, rpm_mirrors)
 
     def package(self, lookup: Lookup) -> Official:

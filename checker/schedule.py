@@ -527,6 +527,7 @@ def run(
     from checker.collect import collect_hosts
     from checker.credentials import password_for
     from checker.evidence import Store, database_file
+    from checker.official import verifier_for
     from checker.packs.choice import for_host
     from checker.packs.store import in_force
     from checker.report import visible, write_report
@@ -632,6 +633,7 @@ def run(
                         prior_for(host.name, config, inventory),
                         whitelist_for_host(base, host.name, inventory),
                         *packs_for(host.name),
+                        verifier=verifier_for(config.verify, base),  # its own time, shared caches
                     )
                 except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'
                     item.problem = f"not analysed ({type(exc).__name__}: {visible(str(exc), 300)})"

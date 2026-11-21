@@ -17,12 +17,16 @@ import hashlib
 import io
 import json
 import lzma
+import os
 import posixpath
 import tarfile
+import tempfile
+import time
 import urllib.parse
 import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from checker.verify import gpg
 from checker.verify.fetch import Fetcher
@@ -48,6 +52,7 @@ MAX_INDEX = 64 * 1024 * 1024  # a compressed Packages file
 MAX_INDEX_TEXT = 512 * 1024 * 1024
 MAX_DEB = 64 * 1024 * 1024
 MAX_COPIES = 6  # dated copies tried for one version
+LISTS_MAX_AGE = 6 * 3600  # seconds the archive's InRelease is kept on disk
 MAX_DATA = 512 * 1024 * 1024  # a .deb's unpacked data archive
 MAX_LAUNCHPAD = 4 * 1024 * 1024
 
@@ -208,7 +213,10 @@ def _clean(name: str) -> str | None:
 
 class Ubuntu:
     """Looks packages up for one verification run; signed lists are kept
-    for the run, so a fleet's servers share them."""
+    for the run, and in `lists_dir` between runs, so a fleet's servers
+    share them. What is kept on disk is the downloaded bytes, checked again
+    (signature, hash) every time they are used: the folder is a cache, never
+    trusted."""
 
     def __init__(
         self,
@@ -217,8 +225,10 @@ class Ubuntu:
         snapshot: str = SNAPSHOT,
         launchpad: str | None = LAUNCHPAD,
         now: datetime | None = None,
+        lists_dir: Path | None = None,
     ):
         self.fetcher = fetcher
+        self.lists_dir = lists_dir
         self.archive = archive.rstrip("/")
         self.snapshot = snapshot.rstrip("/") if snapshot else None
         self.launchpad = launchpad.rstrip("/") if launchpad else None
@@ -297,9 +307,16 @@ class Ubuntu:
         key = (base, suite)
         if key not in self._releases:
             self._releases[key] = None
-            release = self.fetcher.get(f"{base}/dists/{suite}/InRelease", MAX_INRELEASE)
+            url = f"{base}/dists/{suite}/InRelease"
+            # A dated copy never changes; the archive's lists are kept a few hours.
+            fixed = bool(self.snapshot) and base.startswith(self.snapshot + "/")
+            name = "inrelease-" + hashlib.sha256(url.encode()).hexdigest()[:40]
+            release = self._kept(name, None if fixed else LISTS_MAX_AGE)
             if release is None:
-                return None
+                release = self.fetcher.get(url, MAX_INRELEASE)
+                if release is None:
+                    return None
+                self._keep(name, release)
             try:
                 signed, signer = gpg.verify_clearsigned(release, KEYS)
             except gpg.SignatureError as exc:
@@ -319,13 +336,50 @@ class Ubuntu:
         # By hash first: a mirror part-way through an update still serves
         # the file this InRelease names under its hash.
         folder = f"{base}/dists/{suite}/{component}/binary-{arch}"
-        data = self.fetcher.get(f"{folder}/by-hash/SHA256/{digest}", MAX_INDEX)
+        data = self._kept(f"index-{digest}", None)  # named by its hash: never stale
+        if data is not None and (len(data) != size or hashlib.sha256(data).hexdigest() != digest):
+            data = None
         if data is None:
-            data = self.fetcher.get(f"{base}/dists/{suite}/{name}", MAX_INDEX)
-        if data is None or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
-            raise PackageError(f"{base}/dists/{suite}/{name} doesn't match the signed list")
+            data = self.fetcher.get(f"{folder}/by-hash/SHA256/{digest}", MAX_INDEX)
+            if data is None:
+                data = self.fetcher.get(f"{base}/dists/{suite}/{name}", MAX_INDEX)
+            if data is None or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+                raise PackageError(f"{base}/dists/{suite}/{name} doesn't match the signed list")
+            self._keep(f"index-{digest}", data)
         text = decompress(data, name, MAX_INDEX_TEXT).decode("utf-8", "replace")
         return packages_index(text), signer
+
+    def _kept(self, name: str, max_age: float | None) -> bytes | None:
+        """A file kept in lists_dir, if there and (with max_age) fresh."""
+        if self.lists_dir is None:
+            return None
+        path = self.lists_dir / name
+        try:
+            if max_age is not None and time.time() - path.stat().st_mtime > max_age:
+                return None
+            return path.read_bytes()
+        except OSError:
+            return None
+
+    def _keep(self, name: str, data: bytes) -> None:
+        if self.lists_dir is None:
+            return
+        temporary = None
+        try:
+            self.lists_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            handle, temporary = tempfile.mkstemp(dir=self.lists_dir, prefix=".part-")
+            with os.fdopen(handle, "wb") as out:
+                out.write(data)
+            os.replace(temporary, self.lists_dir / name)
+            temporary = None
+        except OSError:
+            pass  # only costs a download next time
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     def _copies(self, codename, package, version, arch):
         """[(dated copy's base, [suite])] that should hold the version,

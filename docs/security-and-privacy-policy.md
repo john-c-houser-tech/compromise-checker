@@ -30,10 +30,15 @@ collects.**
 - Evidence is encrypted with a key your organization holds, kept 90 days by
   default, and can be deleted at any time.
 - Likely secrets are masked before evidence leaves a server.
-- Nothing leaves your organization unless you turn on the optional AI
-  advisor, and then only what section 9 describes, sent with your own
-  account to the AI provider you choose, or you keep the tool's index on a
-  database server outside it (section 10).
+- Nothing about your servers or evidence leaves your organization unless you
+  turn on the optional AI advisor, and then only what section 9 describes,
+  sent with your own account to the AI provider you choose, or you keep the
+  tool's index on a database server outside it (section 10).
+- By default the tool's machine downloads public files: the list of this
+  tool's releases, and, when a PAM module on a server has changed, the
+  distribution's own package for it, to check the change. Those requests name
+  a public file and carry nothing about your servers or evidence; each can be
+  turned off (section 10).
 - No telemetry. The tool never contacts NouriLoop LLC.
 
 ## 3. Authorization and accountability
@@ -397,7 +402,8 @@ coverage, and advise on remediation. It works fully without it.
 
 ## 10. What leaves your organization
 
-Nothing, unless you choose one of these:
+Nothing, unless you choose one of these (two of them, the package downloads and the daily check for a newer
+version, are on until you turn them off):
 
 - the AI advisor (section 9);
 - optional reputation checks, which send IP addresses or file fingerprints
@@ -419,6 +425,17 @@ Nothing, unless you choose one of these:
   type `auto` as the web address in Linode's form, the name is made at sslip.io, a public service that turns
   an address into a name, so the machine's address appears in public certificate logs and the name depends on
   that service.
+- requests for the distribution's own packages, when a file in a PAM module directory on a server has changed
+  or appeared since its baseline (on by default; `verify.enabled` turns it off). The tool's machine downloads
+  the package the server says owns the file, for the version the server says is installed, checks its signature
+  with keys built into the tool, and compares the file, so that a routine update isn't reported as a break-in.
+  The requests go to Ubuntu's archive and its dated copies (with Launchpad's public record of when a version was
+  published), and to Rocky Linux's and AlmaLinux's repositories and vaults, or to mirrors you name
+  (`verify.ubuntu_archive`, `verify.rocky`, `verify.almalinux`). Each names a public package file and its
+  version, so whoever runs the mirror can see that someone fetched, say, a given version of `libpam-modules`; no
+  server's name or address, finding or evidence is sent. What was downloaded is kept on the tool's machine, so a
+  package is fetched once for the whole fleet. Without network access the change is reported as it always was,
+  with a note saying it couldn't be checked.
 - a request to GitHub once a day for the public list of this tool's releases, and for the newest one's signed
   description, from the web interface when someone with full access opens a page. It carries nothing about your
   machine or servers beyond what any download does: the address it comes from. The setting `updates.check`
@@ -426,8 +443,8 @@ Nothing, unless you choose one of these:
   release and its dependencies from GitHub and PyPI.
 
 The tool has no telemetry, usage reporting or licence check, and it never
-contacts NouriLoop LLC on its own. The daily check for a newer version is the one thing it fetches without
-being asked each time, and it can be turned off. Threat packs (section 11) are downloaded
+contacts NouriLoop LLC on its own. The daily check for a newer version and the package downloads above are the
+only things it fetches without being asked each time, and each can be turned off. Threat packs (section 11) are downloaded
 only when someone runs `checker packs pull` or asks for them on a page of the
 web interface, over HTTPS, from NouriLoop's public repository on GitHub or from
 a mirror you name. That request carries

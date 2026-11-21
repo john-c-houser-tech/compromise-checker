@@ -61,6 +61,7 @@ from checker.inventory import (
     load_inventory,
     new_host_problems,
 )
+from checker.official import verifier_for
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.releases import ReleaseError
@@ -2113,7 +2114,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 prior = prior_for(host, config, inventory)
                 assessment = analyze(
                     store, host, identity, recipients, args.bundle, prior, whitelists[host],
-                    *packs_for(host),
+                    *packs_for(host), verifier=verifier_for(config.verify, base),
                 )  # fmt: skip
                 _print_assessment(assessment, args)
             except EvidenceError as exc:

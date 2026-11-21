@@ -338,6 +338,22 @@ class Updates(BaseModel):
     check: bool = True
 
 
+class Verify(BaseModel):
+    """Changed PAM modules checked against the distribution's own packages,
+    fetched by the checker's machine (#189; policy: what leaves the machine is
+    requests for public package files). Mirror addresses, if the
+    organization has its own: Ubuntu's archive root, and for Rocky Linux and
+    AlmaLinux the folder holding the major releases."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    seconds_per_server: int = Field(default=60, ge=5, le=900)
+    ubuntu_archive: str | None = Field(default=None, pattern=r"^https?://\S+$")
+    rocky: str | None = Field(default=None, pattern=r"^https?://\S+$")
+    almalinux: str | None = Field(default=None, pattern=r"^https?://\S+$")
+
+
 class Config(BaseModel):
     # Hidden: an error mustn't repeat a value from the file, which could be a hand-typed password.
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -370,6 +386,7 @@ class Config(BaseModel):
     # beside the evidence.
     database: str | None = None
     updates: Updates = Field(default_factory=Updates)
+    verify: Verify = Field(default_factory=Verify)
 
     @field_validator("database")
     @classmethod

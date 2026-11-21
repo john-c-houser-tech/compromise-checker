@@ -137,7 +137,23 @@ def key_source_words(
 
 def describe(config: Config) -> list[str]:
     """Each choice in words: what is collected, and what may leave."""
-    return [*_describe(config), _updates_line(config)]
+    return [*_describe(config), _verify_line(config), _updates_line(config)]
+
+
+def _verify_line(config: Config) -> str:
+    verify = config.verify
+    if not verify.enabled:
+        return (
+            "Changed PAM modules: not checked against the distribution's packages"
+            " (verify.enabled is off), so a routine PAM update reads as a break-in"
+        )
+    mirrors = [m for m in (verify.ubuntu_archive, verify.rocky, verify.almalinux) if m]
+    return (
+        "Changed PAM modules: checked against the distribution's own packages, which this"
+        " machine downloads (public files, by name and version; no server names or findings)"
+        + (f" from your mirrors ({', '.join(mirrors)})" if mirrors else "")
+        + f", {verify.seconds_per_server} seconds a server at most"
+    )
 
 
 def _updates_line(config: Config) -> str:
@@ -159,6 +175,7 @@ def _describe(config: Config) -> list[str]:
     if not advisor.enabled:
         lines.append(
             "AI advisor: off. Nothing is sent anywhere but the SSH sessions to your servers"
+            + (", requests for public package files" if config.verify.enabled else "")
             + (" and what your notify command sends." if config.notify_command else ".")
         )
         return lines + [_notifications(config)]
@@ -330,6 +347,20 @@ SETTABLE: dict[str, Setting] = {
             _bool,
             "on (default) or off: whether the web interface asks GitHub daily for a newer version",
         ),
+        Setting(
+            ("verify", "enabled"),
+            _bool,
+            "on (default) or off: whether changed PAM modules are checked against the"
+            " distribution's own packages, which the checker downloads",
+        ),
+        Setting(
+            ("verify", "seconds_per_server"),
+            int,
+            "the time that check gets for each server (default 60)",
+        ),
+        Setting(("verify", "ubuntu_archive"), _optional, "your own Ubuntu mirror, or none"),
+        Setting(("verify", "rocky"), _optional, "your own Rocky Linux mirror, or none"),
+        Setting(("verify", "almalinux"), _optional, "your own AlmaLinux mirror, or none"),
         Setting(("advisor", "enabled"), _bool, "on or off"),
         Setting(("advisor", "model"), str, "the model's name (default claude-opus-5-5)"),
         Setting(

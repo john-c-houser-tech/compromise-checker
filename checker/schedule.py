@@ -636,7 +636,7 @@ def run(
                         *packs_for(host.name),
                         # Each host its own time, the caches shared; none once the
                         # distributions' servers proved out of reach this run.
-                        verifier=None if verify_down else verifier_for(config.verify, base),
+                        verifier=verifier_for(config.verify, base, cached_only=verify_down),
                     )
                     verify_down = verify_down or unreachable(assessment)
                 except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'

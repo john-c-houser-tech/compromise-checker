@@ -265,7 +265,7 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
 
 def official_results(
     store, row, identity, recipients, snapshot, baseline_snapshot, since_baseline, baseline_id,
-    verifier,
+    verifier, previous_snapshot=None, previous_id=None,
 ) -> dict[str, Any] | None:  # fmt: skip
     """This collection's PAM module results: stored ones made against the
     same baseline, else (with a verifier) checked now and stored."""
@@ -276,7 +276,13 @@ def official_results(
         return stored
     if verifier is None or not official_targets(snapshot, since_baseline):
         return None
-    results = verify_pam(snapshot, baseline_snapshot, since_baseline, verifier, baseline_id)
+    previous_results = None
+    if previous_id and previous_id != baseline_id:
+        previous_results = load_official(store, store.bundle(previous_id), identity)
+    results = verify_pam(
+        snapshot, baseline_snapshot, since_baseline, verifier, baseline_id,
+        previous_snapshot, previous_results,
+    )  # fmt: skip
     store_official(store, row, recipients, results)
     return results
 
@@ -375,7 +381,7 @@ def analyze(
         parsed = parse_bundle(row, identity)
         store_parsed(store, row, recipients, parsed)
     since_baseline = since_previous = None
-    previous_time = None
+    previous_time = previous_id = None
     previous_snapshot = None
     no_baseline = "no baseline yet"
     notes = list(found.notes)
@@ -392,6 +398,7 @@ def analyze(
         else:
             since_previous = comparison.differences
             previous_time = store.bundle(comparison.bundle_id)["started_at"]
+            previous_id = comparison.bundle_id
             previous_snapshot = snapshot_of(
                 store, store.bundle(comparison.bundle_id), identity, recipients
             )
@@ -434,7 +441,7 @@ def analyze(
 
     official = official_results(
         store, row, identity, recipients, snapshot, baseline_snapshot, since_baseline,
-        found.baseline_id, verifier,
+        found.baseline_id, verifier, previous_snapshot, previous_id,
     )  # fmt: skip
     notes += official_notes(official, len(official_targets(snapshot, since_baseline)))
 

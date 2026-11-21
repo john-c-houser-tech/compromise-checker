@@ -863,7 +863,157 @@ def pam_module(line: str) -> str | None:
     return tokens[2].rsplit("/", 1)[-1]
 
 
-@check("pam.changes", "PAM: pam_exec lines, configuration changes, unknown modules")
+DISTRIBUTIONS = {"ubuntu": "Ubuntu", "rocky": "Rocky Linux", "almalinux": "AlmaLinux"}
+
+
+def official_result(context: Context, path: str, modules: dict) -> dict[str, Any] | None:
+    """This file's result from checking it against the distribution's own
+    package (checker.official, #189), if it is for this very file (the hash
+    it compared is the one collected now)."""
+    result = ((context.official or {}).get("files") or {}).get(path)
+    if not isinstance(result, dict):
+        return None
+    sha256 = (modules.get(path) or {}).get("sha256")
+    return result if sha256 and result.get("sha256") == sha256 else None
+
+
+def _distribution(context: Context) -> str:
+    system = (context.items("host").get("os") or {}).get("id")
+    return (
+        DISTRIBUTIONS.get(system, "the distribution")
+        if isinstance(system, str)
+        else ("the distribution")
+    )
+
+
+def _a(name: str) -> str:
+    return ("an " if name[:1] in "AEIOUaeiou" else "a ") + name
+
+
+# Changes a package's own file can't account for: the verifier compares content only.
+NOT_CONTENT = {"mode", "uid", "gid"}
+
+
+def _why_not_checked(context: Context, path: str, modules: dict, outcome: str | None) -> str:
+    raw = ((context.official or {}).get("files") or {}).get(path)
+    if outcome == "absent":
+        return "its package has no such file"
+    if outcome == "link":
+        return "its package has a link there, not a file"
+    if isinstance(raw, dict) and raw.get("outcome") == "not_checked":
+        return str(raw.get("reason") or "not checked")
+    if isinstance(raw, dict):
+        return "the result was for another copy of the file"
+    if not (modules.get(path) or {}).get("sha256"):
+        return "it has no hash to compare (not a regular file, or too large)"
+    return "it wasn't among the files checked"
+
+
+def _pam_module_finding(context, path, how, fields, result, modules) -> Finding | None:
+    """The finding for one changed or new PAM module, or None when the
+    distribution's own package explains it as an ordinary update (counted
+    into one low finding)."""
+    distribution = _distribution(context)
+    ref = [context.change_ref("pam", path, how)]
+    new = context.new_since_previous("pam", path)
+    outcome = (result or {}).get("outcome")
+    package = f"{(result or {}).get('package')} {(result or {}).get('version')}"
+    others = sorted(NOT_CONTENT & set(fields or {}))
+    if outcome == "matched" and not others:
+        older = result.get("older_than_baseline")
+        older_seen = result.get("older_than_seen")
+        if older is False and older_seen is False and not result.get("new_package"):
+            return None
+        if older is True or older_seen is True:
+            title, variant = f"PAM was moved back to an older {distribution} package", "downgrade"
+            than = (
+                f"the baseline's {result.get('baseline_version')}"
+                if older is True
+                else f"{result.get('newest_seen')}, seen since the baseline"
+            )
+            why = f"{package}, older than {than}"
+        elif result.get("new_package"):
+            title, variant = (
+                f"A PAM module from {_a(distribution)} package installed since the baseline",
+                "new_package",
+            )
+            why = package
+        else:
+            title, variant = (
+                f"A PAM module from {distribution}'s package, its version not compared",
+                "version_unknown",
+            )
+            why = f"{package}; the baseline's version isn't known, or can't be compared"
+        return Finding(
+            "pam.changes", title, COMPROMISE, "medium", f"{path}: {why}", [f"path:{path}"],
+            ref, new=new, variant=variant,
+        )  # fmt: skip
+    if outcome == "differs":
+        return Finding(
+            "pam.changes",
+            f"A PAM module differs from {distribution}'s package for the installed version",
+            COMPROMISE, "high", f"{path}: not the file in {package}", [f"path:{path}"],
+            ref, new=new, variant="differs",
+        )  # fmt: skip
+    note = ""
+    if outcome == "matched":  # the content is the package's, but its mode or owner changed
+        note = f" (its content is {distribution}'s, but its {', '.join(others)} changed)"
+    elif context.official is not None:
+        note = (
+            f" (not checked against {distribution}'s package: "
+            f"{_why_not_checked(context, path, modules, outcome)})"
+        )
+    if how == "added":
+        return Finding(
+            "pam.changes", "A new file in a PAM module directory", COMPROMISE, "high",
+            path + note, [f"path:{path}"], ref, new=new, uncertain=context.uncertain("pam"),
+            variant="added",
+        )  # fmt: skip
+    return Finding(
+        "pam.changes", "A PAM module file changed", COMPROMISE, "high",
+        f"{path}: {', '.join(sorted(fields))}{note}", [f"path:{path}"], ref, new=new,
+        variant="changed",
+    )  # fmt: skip
+
+
+def _pam_modules_updated(context: Context, explained: list) -> Finding:
+    """One low finding for every module the distribution's own packages
+    explain: an ordinary update, not one strong sign per file."""
+    distribution = _distribution(context)
+
+    def words(r):
+        before, now = r.get("baseline_version"), r.get("version")
+        if before == now:
+            return f"{r.get('package')} {now} (the same version, its files replaced)"
+        return f"{r.get('package')} {before} -> {now}"
+
+    packages = sorted({words(r) for _, _, r in explained})
+    return Finding(
+        "pam.changes",
+        f"PAM modules updated by {distribution}'s own packages",
+        COMPROMISE,
+        "low",
+        f"{len(explained)} file(s), each the same as in the signed package: {', '.join(packages)}",
+        [f"path:{path}" for path, _, _ in explained],
+        [context.change_ref("pam", path, how) for path, how, _ in explained],
+        new=any(context.new_since_previous("pam", path) for path, _, _ in explained),
+        variant="official_update",
+    )
+
+
+@check(
+    "pam.changes",
+    "PAM: pam_exec lines, configuration changes, unknown modules",
+    variants=(
+        "official_update",
+        "downgrade",
+        "new_package",
+        "version_unknown",
+        "differs",
+        "added",
+        "changed",
+    ),  # fmt: skip
+)
 def pam_changes(context: Context) -> list[Finding]:
     findings = []
     rules = context.items("pam_rules")
@@ -904,37 +1054,27 @@ def pam_changes(context: Context) -> list[Finding]:
                         uncertain=uncertain,
                     )
                 )
-        for path in (context.changes("pam") or {}).get("added", {}):
-            if "/security/" in path:
-                findings.append(
-                    Finding(
-                        "pam.changes",
-                        "A new file in a PAM module directory",
-                        COMPROMISE,
-                        "high",
-                        path,
-                        [f"path:{path}"],
-                        [context.change_ref("pam", path, "added")],
-                        new=context.new_since_previous("pam", path),
-                        uncertain=context.uncertain("pam"),
-                    )
-                )
-        for path, fields in (context.changes("pam") or {}).get("changed", {}).items():
-            if "/security/" in path and (
-                {"sha256", "content_sha256", "size", "inode"} & set(fields)
-            ):
-                findings.append(
-                    Finding(
-                        "pam.changes",
-                        "A PAM module file changed",
-                        COMPROMISE,
-                        "high",
-                        f"{path}: {', '.join(sorted(fields))}",
-                        [f"path:{path}"],
-                        [context.change_ref("pam", path, "changed")],
-                        new=context.new_since_previous("pam", path),
-                    )
-                )
+        modules = context.items("pam")
+        explained: list[tuple[str, str, dict]] = []
+        for how, entries in (
+            ("added", (context.changes("pam") or {}).get("added", {})),
+            ("changed", (context.changes("pam") or {}).get("changed", {})),
+        ):
+            for path, fields in entries.items():
+                if "/security/" not in path:
+                    continue
+                if how == "changed" and not (
+                    {"sha256", "content_sha256", "size", "inode"} & set(fields)
+                ):
+                    continue
+                result = official_result(context, path, modules)
+                finding = _pam_module_finding(context, path, how, fields, result, modules)
+                if finding is None:
+                    explained.append((path, how, result))
+                else:
+                    findings.append(finding)
+        if explained:
+            findings.append(_pam_modules_updated(context, explained))
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

@@ -24,8 +24,9 @@ from checker.snapshot import Snapshot
 # 14: threat packs' detections (plan 4.5); 15: nftables read as JSON beside text; 16: no
 # folder name from the server in a title (it's in the summary); 17: account changes the
 # baseline's own logs held, containerd's new random port, and dpkg lists rewritten by their
-# own package's update are no longer counted (#198-#200).
-CHECKS_VERSION = 17
+# own package's update are no longer counted (#198-#200); 18: changed PAM modules judged
+# against the distribution's own packages (#189).
+CHECKS_VERSION = 18
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"

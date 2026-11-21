@@ -61,7 +61,7 @@ try:
 except ImportError:
     resource = None
 
-COLLECTOR_VERSION = "0.1.3"
+COLLECTOR_VERSION = "0.1.4"
 PROTOCOL = 1
 MASKING_VERSION = 6
 

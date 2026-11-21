@@ -942,9 +942,15 @@ def test_deb_hardlinks_gzip_and_trailing_data():
         make_ar({"debian-binary": b"2.0\n", "data.tar.gz": gzip.compress(raw.getvalue())})
     )
     assert files["/usr/b"] == files["/usr/a"] == {"sha256": sha(b"a")}
-    twice = zstd.compress(raw.getvalue()) + zstd.compress(b"more")
-    with pytest.raises(deb.PackageError, match="more after its end"):
-        deb.decompress(twice, "data.tar.zst", 10**6)
+    # Streams one after another, and zero padding (Ubuntu's release lists): all unpacked.
+    twice = zstd.compress(b"one ") + zstd.compress(b"two")
+    assert deb.decompress(twice, "x.zst", 10**6) == b"one two"
+    padded = lzma.compress(b"list") + lzma.compress(b" more") + b"\0" * 8
+    assert deb.decompress(padded, "Packages.xz", 10**6) == b"list more"
+    with pytest.raises(deb.PackageError, match="doesn't unpack"):
+        deb.decompress(lzma.compress(b"list") + b"junk", "Packages.xz", 10**6)
+    with pytest.raises(deb.PackageError, match="more than the limit"):
+        deb.decompress(twice, "x.zst", 5)  # the cap counts every stream
 
 
 @needs_gpgv

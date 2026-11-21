@@ -53,6 +53,7 @@ MAX_INDEX = 64 * 1024 * 1024  # a compressed Packages file
 MAX_INDEX_TEXT = 512 * 1024 * 1024
 MAX_DEB = 64 * 1024 * 1024
 MAX_COPIES = 6  # dated copies tried for one version
+MAX_STREAMS = 64  # compressed streams one after another in one file
 LISTS_MAX_AGE = 6 * 3600  # seconds the archive's InRelease is kept on disk
 MAX_DATA = 512 * 1024 * 1024  # a .deb's unpacked data archive
 MAX_LAUNCHPAD = 4 * 1024 * 1024
@@ -87,26 +88,35 @@ def release_hashes(signed: bytes, suite: str) -> dict[str, tuple[str, int]]:
 
 
 def decompress(data: bytes, name: str, cap: int) -> bytes:
-    """`data` unpacked by its file name's ending, at most `cap` bytes out."""
-    if name.endswith(".zst"):
-        engine = zstd.ZstdDecompressor()
-    elif name.endswith(".xz"):
-        engine = lzma.LZMADecompressor()
-    elif name.endswith(".gz"):
-        engine = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    elif name.endswith(".tar") or name == "data.tar":
+    """`data` unpacked by its file name's ending, at most `cap` bytes out.
+    Streams one after another (as xz and zstd allow, and Ubuntu's release
+    lists have) are all unpacked, and zero padding after them is allowed;
+    anything else after the end refuses the file, never cut short."""
+    if name.endswith(".tar") or name == "data.tar":
         return data if len(data) <= cap else _too_large(name)
-    else:
+    if not name.endswith((".zst", ".xz", ".gz")):
         raise PackageError(f"unsupported compression: {name}")
-    try:
-        out = engine.decompress(data, max_length=cap)
-    except (lzma.LZMAError, zstd.ZstdError, zlib.error) as exc:
-        raise PackageError(f"{name} doesn't unpack: {exc}") from None
-    if not engine.eof:
-        _too_large(name)
-    if engine.unused_data:
-        raise PackageError(f"{name} has more after its end")  # never silently cut short
-    return out
+    out, rest = [], data
+    left = cap
+    for _ in range(MAX_STREAMS):
+        if name.endswith(".zst"):
+            engine = zstd.ZstdDecompressor()
+        elif name.endswith(".xz"):
+            engine = lzma.LZMADecompressor()
+        else:
+            engine = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        try:
+            piece = engine.decompress(rest, max_length=left)
+        except (lzma.LZMAError, zstd.ZstdError, zlib.error) as exc:
+            raise PackageError(f"{name} doesn't unpack: {exc}") from None
+        if not engine.eof:
+            _too_large(name)
+        out.append(piece)
+        left -= len(piece)
+        rest = engine.unused_data
+        if not rest.strip(b"\0"):
+            return b"".join(out)
+    raise PackageError(f"{name} has more streams than the limit")
 
 
 def _too_large(name: str):

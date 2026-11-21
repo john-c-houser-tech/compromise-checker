@@ -301,6 +301,23 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
   version 3. The policy (sections 2 and 10), the install guide and `config show` now say the
   downloads are for the PAM modules on the servers, not only changed ones.
 
+- **From #216's two reviews, and John's decision (2026-11-21):** a module swapped before the
+  first check could still hide behind one forged package record. Decided: an unchanged module
+  whose signed package **contradicts** the server (has no such file at that path for the owner
+  the server names, or has a link there) is **high**, like `differs`; rpm's `%ghost` files are
+  kept as such (package cache format 2) so a ghost isn't read as a missing file; an unchanged
+  module that **can't be checked** (a forged or unknown version, several owners, a vendor's
+  package) gets **one coverage note per reason**, not a finding, since real third-party PAM
+  modules land there too. Also: the circuit breaker counts only downloads; a package not found
+  is remembered for a day, and on Ubuntu one in none of the current lists isn't sent to
+  Launchpad; a swapped module whose mode changed is reported once; a rebuilt report keeps
+  earlier results.
+- **Proof (Linode, 2026-11-21), every module at the first check:** Ubuntu 24.04 46 of 46
+  matched, Rocky Linux 9 59 of 59, no PAM finding on either fresh server; the update and the swap
+  as in V.6. The first run of it found Ubuntu's release-pocket `Packages.xz` holds more than one
+  xz stream, which the verifier refused; streams one after another and zero padding are now
+  unpacked (the size cap counting them all).
+
 ## V.6: the proof on real servers (2026-11-21)
 
 `tests/integration/pam_update_proof.py`, on new Linodes (Ubuntu 24.04, Rocky Linux 9): PAM moved

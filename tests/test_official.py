@@ -410,3 +410,103 @@ def test_config_show_says_what_is_downloaded_and_from_where():
     assert "your mirrors (https://m.test/u)" in line(ubuntu_archive="https://m.test/u")
     assert "aren't looked for" in line(older_versions=False)
     assert "not checked" in line(enabled=False)
+
+
+# === V.5: pam.changes judged by the results ==================================================
+
+
+def pam_findings(before, after, verifier=None, official_override=None):
+    from checker.checks import Context, run_checks
+
+    baseline, current = snap(**before), snap(**after)
+    diff = compare(baseline, current)
+    results = (
+        official_override
+        if official_override is not None
+        else (official.verify_pam(current, baseline, diff, verifier, "b0") if verifier else None)
+    )
+    context = Context(
+        host="web01", bundle_id="b2", events=[], snapshot=current, baseline_id="b0",
+        since_baseline=diff, baseline_snapshot=baseline, official=results,
+    )  # fmt: skip
+    found, ran = run_checks(context)
+    assert not [r for r in ran if r["status"].startswith("failed")], ran
+    return [f for f in found if f.check == "pam.changes"]
+
+
+def titles(found):
+    return sorted((f.band, f.title) for f in found)
+
+
+def test_an_ordinary_update_is_one_low_finding():
+    paths = [f"/usr/lib/x86_64-linux-gnu/security/pam_{i}.so" for i in range(46)]
+    before = dict(
+        BEFORE, pam={p: {"sha256": GOOD} for p in paths}, owners={p: owner() for p in paths}
+    )
+    after = dict(AFTER, pam={p: {"sha256": BAD} for p in paths}, owners={p: owner() for p in paths})
+    found = pam_findings(before, after, FakeVerifier({p: {"sha256": BAD} for p in paths}))
+    assert titles(found) == [("low", "PAM modules updated by Ubuntu's own packages")]
+    assert found[0].variant == "official_update" and len(found[0].evidence) == 46
+    assert "libpam-modules 1.5.3-5ubuntu5.6 -> 1.5.3-5ubuntu5.7" in found[0].summary
+    # Without the results (verify off): 46 high findings, as before.
+    unchecked = pam_findings(before, after)
+    assert {f.band for f in unchecked} == {"high"} and len(unchecked) == 46
+
+
+def test_genuine_files_that_aren_t_an_ordinary_update_are_medium():
+    older = dict(AFTER, packages={"libpam-modules amd64": {"version": "1.5.3-5ubuntu5.1"}})
+    found = pam_findings(BEFORE, older, FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert titles(found) == [("medium", "PAM was moved back to an older Ubuntu package")]
+    assert "older than the baseline's 1.5.3-5ubuntu5.6" in found[0].summary
+    unknown = dict(BEFORE, packages_complete=False)
+    found = pam_findings(unknown, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert [f.variant for f in found] == ["version_unknown"] and found[0].band == "medium"
+    new = "/usr/lib/x86_64-linux-gnu/security/pam_sss.so"
+    added = dict(
+        BEFORE,
+        pam={**BEFORE["pam"], new: {"sha256": GOOD}},
+        owners={**BEFORE["owners"], new: owner("libpam-sss")},
+        packages={**BEFORE["packages"], "libpam-sss amd64": {"version": "2.9"}},
+    )
+    found = pam_findings(BEFORE, added, FakeVerifier({new: {"sha256": GOOD}}))
+    assert [(f.band, f.variant) for f in found] == [("medium", "new_package")]
+
+
+def test_a_module_that_isn_t_the_package_s_file_is_high():
+    found = pam_findings(BEFORE, AFTER, FakeVerifier({UNIX: {"sha256": GOOD}}))
+    assert titles(found) == [
+        ("high", "A PAM module differs from Ubuntu's package for the installed version")
+    ]
+    assert found[0].variant == "differs"
+
+
+def test_what_couldn_t_be_checked_stays_high_and_says_why():
+    found = pam_findings(BEFORE, AFTER, FakeVerifier(None, "isn't in Ubuntu's archive"))
+    assert titles(found) == [("high", "A PAM module file changed")]
+    assert "not checked against Ubuntu's package: isn't in Ubuntu's archive" in found[0].summary
+    swapped = dict(AFTER, owners={UNIX: owner("evil-pam")})
+    found = pam_findings(BEFORE, swapped, FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert "owning package isn't the baseline's" in found[0].summary and found[0].band == "high"
+
+
+def test_a_result_for_another_file_counts_for_nothing():
+    results = check(BEFORE, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))
+    results["files"][UNIX]["sha256"] = GOOD  # made for a file other than the one collected now
+    found = pam_findings(BEFORE, AFTER, official_override=results)
+    assert titles(found) == [("high", "A PAM module file changed")]
+
+
+def test_the_assessment_of_a_routine_update_is_no_longer_a_break_in(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, pam_records(GOOD, "1.5.3-5ubuntu5.6"))
+    analyze(store, "web01", identity, config.recipients)
+    add_bundle(home, "b2", 10, pam_records(BAD, "1.5.3-5ubuntu5.7"))
+    off = analyze(store, "web01", identity, config.recipients)
+    assert [f["band"] for f in off["findings"] if f["check"] == "pam.changes"] == ["high"]
+    on = analyze(
+        store, "web01", identity, config.recipients, "b2",
+        verifier=FakeVerifier({UNIX: {"sha256": BAD}}),
+    )  # fmt: skip
+    pam = [f for f in on["findings"] if f["check"] == "pam.changes"]
+    assert [(f["band"], f["variant"]) for f in pam] == [("low", "official_update")]
+    assert on["score"]["probability"] < off["score"]["probability"]

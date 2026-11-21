@@ -114,7 +114,10 @@ reboots inside them informational ([whitelists](whitelists.md#maintenance-window
 | `sshd.config` | sshd settings added or removed | high for settings that change who can log in and how (PermitRootLogin, ports, key and principal files and commands, PasswordAuthentication, Match, Include…), else medium | yes |
 | `pam.changes` | a `pam_exec` line (PAM running a program) | medium | no |
 | | PAM lines added or removed | high | yes |
-| | new or changed files in a PAM module directory | high | yes |
+| | new or changed files in a PAM module directory, each the same file as in the distribution's signed package for the version installed, not older than the baseline's (an update; one finding for them all, `official_update`) | low | yes |
+| | the same, but an older version than the baseline's (`downgrade`), from a package installed since the baseline (`new_package`), or with the baseline's version unknown (`version_unknown`) | medium | yes |
+| | a module that isn't the file in the distribution's package for the version installed (`differs`) | high | yes |
+| | other new or changed files in a PAM module directory, including those that couldn't be checked against the distribution's package (the summary says why) | high | yes |
 | | a PAM module no package installed | high | no |
 
 Logins at unusual hours (DESIGN.md §8.3) need a per-host profile and come

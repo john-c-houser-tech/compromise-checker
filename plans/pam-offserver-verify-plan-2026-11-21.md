@@ -214,7 +214,7 @@ snapshot, verification against recorded package data, and the checks:
   which the package list leaves out), two rpm entries for one name and architecture (an
   interrupted dnf), a `packages_pending` collection (rpm's log not yet written back), and
   directories (the owner list names them too; only files have a digest).
-- **V.5 The check:** `pam.changes` uses the results. The tests are the ten attacks above, end to
+- **V.5 The check: DONE 2026-11-21** (below). `pam.changes` uses the results. The tests are the ten attacks above, end to
   end, plus the ones below.
 - **Held to the baseline (V.4/V.5, from the #210 security review).** Every field the verifier
   is given is the server's claim, so a match only proves "a genuine file for the system,
@@ -282,6 +282,28 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
 - **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
   Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
 - **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.
+
+## V.5 as built (2026-11-21)
+
+- `pam.changes` reads `Context.official`, and a result counts only if the hash it compared is the
+  file's hash in this collection. For each new or changed file in a PAM module directory:
+  - matched, `older_than_baseline is False`, not `new_package`: counted into **one low finding**,
+    "PAM modules updated by Ubuntu's own packages" (variant `official_update`), with the
+    packages and their versions;
+  - matched but older (`downgrade`, decision 2), from a package new since the baseline
+    (`new_package`), or the baseline's version unknown (`version_unknown`): **medium**, one per
+    file. The file is genuine, so the worst it can be is a downgrade, which is medium;
+  - `differs`: **high**, "A PAM module differs from Ubuntu's package for the installed version";
+  - anything else: **high**, as before, with "not checked against Ubuntu's package: <reason>"
+    in the summary.
+- Checks version 18. Plain words for each variant in the web interface; `docs/checks.md`.
+- The attack list: 1 (diversion) and 9 (lying hints) are "owner isn't the baseline's" or no
+  package to match; 2 and 3 (made-up, rebuilt versions) aren't in the signed lists; 4 and 5
+  (journal, clock) are no longer used; 6 (pam_permit over pam_unix) is `differs`; 7 (another
+  release) is "the release isn't the baseline's"; 8 and 10 (tampering, hostile packages) fail in
+  the verifier. Each has a test in `tests/test_verify.py` or `tests/test_official.py`.
+- End to end: the same update that read as one high finding per module without the results now
+  reads as one low finding, and the host's probability drops.
 
 ## V.4 as built (2026-11-21)
 

@@ -30,7 +30,7 @@ from checker.verify import deb, gpg, rpm
 from checker.verify.fetch import Fetcher, FetchError, HttpFetcher
 from checker.verify.words import show
 
-CACHE_FORMAT = 1
+CACHE_FORMAT = 2  # 2: rpm's %ghost files kept
 MISSING_FOR = 24 * 3600  # seconds a package that wasn't found is not asked about again
 
 
@@ -91,8 +91,9 @@ def package_paths(path: str, merged: dict[str, str]) -> list[str]:
 
 
 def compare(official: Official, path: str, sha256: str, merged: dict[str, str]) -> str:
-    """'matched', 'differs', 'absent' (the package has no such file) or
-    'link' (the package ships a link there, so there is nothing to hash)."""
+    """'matched', 'differs', 'absent' (the package has no such file), 'link'
+    (the package ships a link there, so there is nothing to hash) or 'ghost'
+    (the package lists the path but ships nothing: rpm's %ghost)."""
     if not official.found:
         raise ValueError("compare needs a package that was found")
     entries = [official.files[p] for p in package_paths(path, merged) if p in official.files]
@@ -100,6 +101,8 @@ def compare(official: Official, path: str, sha256: str, merged: dict[str, str]) 
         return "absent"
     if any(e.get("sha256") == (sha256 or "").lower() for e in entries):
         return "matched"
+    if all(e.get("ghost") for e in entries):
+        return "ghost"
     if all("link" in e for e in entries):
         return "link"
     return "differs"
@@ -209,7 +212,8 @@ class Verifier:
                 return None  # a key no longer pinned for this system: fetch again
             files = data["files"]
             if not isinstance(files, dict) or not all(
-                isinstance(v, dict) and set(v) in ({"sha256"}, {"link"}) for v in files.values()
+                isinstance(v, dict) and set(v) in ({"sha256"}, {"link"}, {"ghost"})
+                for v in files.values()
             ):
                 return None
             return Official(lookup, files, str(data["source"]), signer, cached=True)

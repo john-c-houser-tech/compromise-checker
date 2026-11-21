@@ -255,6 +255,8 @@ def _compare_link(official, target: Target, merged: dict[str, str]) -> str:
     entries = [official.files[p] for p in package_paths(target.path, merged) if p in official.files]
     if not entries:
         return "absent"
+    if all(e.get("ghost") for e in entries):
+        return "ghost"
     return "matched" if any(e.get("link") == target.link_target for e in entries) else "differs"
 
 
@@ -387,6 +389,7 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
     reasons: dict[str, int] = {}
     owner_unknown = transient = downloaded = 0
     unchanged: dict[str, int] = {}
+    unchanged_reasons: dict[str, int] = {}
     for result in ((stored or {}).get("files") or {}).values():
         outcome = result.get("outcome", "not_checked")
         transient += bool(result.get("transient"))
@@ -395,6 +398,9 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
             # Every module is checked (V.7); the counts and reasons stay the
             # changed ones', and the unchanged are counted apart.
             unchanged[outcome] = unchanged.get(outcome, 0) + 1
+            if outcome == "not_checked":
+                reason = str(result.get("reason") or "")[:200]
+                unchanged_reasons[reason] = unchanged_reasons.get(reason, 0) + 1
             continue
         counts[outcome] = counts.get(outcome, 0) + 1
         owner_unknown += bool(result.get("baseline_owner_unknown"))
@@ -407,6 +413,7 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
         "baseline_owner_unknown": owner_unknown,
         "transient": transient,
         "unchanged": unchanged,
+        "unchanged_not_checked": unchanged_reasons,
         "downloaded": downloaded,
     }
 

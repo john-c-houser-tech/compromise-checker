@@ -8,6 +8,7 @@ collection and `checker analyze` with verification on (as `checker run`
 does); then pam_permit.so copied over pam_unix.so, a third collection and
 analysis. Expected:
 
+- at the first check (every module checked, V.7): no `pam.changes` finding;
 - after the update: one low `pam.changes` finding (official_update) and no
   medium or high one;
 - after the swap: a high `pam.changes` finding (differs) for pam_unix.so.
@@ -152,7 +153,16 @@ async def prove(api, distro: str, region: str, work: Path) -> Result:
 
             try:
                 await detection.collect(home, config, scanner, known)
-                analysed()  # the baseline
+                first, seconds = analysed()  # the baseline: every module checked (V.7)
+                unchanged = (first.get("official_files") or {}).get("unchanged")
+                first_pam = pam(first)
+                coverage = [n for n in first["notes"] if "PAM module" in n]
+                result.lines.append(
+                    f"first check: {[(f['band'], f.get('variant')) for f in first_pam]},"
+                    f" unchanged modules {unchanged}, {seconds:.1f} s"
+                )
+                result.lines += [f"  note: {n}" for n in coverage]
+                result.lines += [f"  {f['band']}: {f['title']}: {f['summary']}" for f in first_pam]
                 updated = await run(conn, UPDATE[distro], "updating PAM")
                 result.lines.append(f"updated to {updated.split()[-1]}")
                 await detection.collect(home, config, scanner, known)
@@ -183,7 +193,7 @@ async def prove(api, distro: str, region: str, work: Path) -> Result:
                     f" {seconds:.1f} s, {swapped['score']['band']}"
                     f" ({swapped['score']['probability']:.4f})"
                 )
-                result.passed = update_ok and len(differs) == 1
+                result.passed = not first_pam and update_ok and len(differs) == 1
             finally:
                 store.close()
     except Exception as exc:

@@ -926,6 +926,8 @@ def _why_not_checked(context: Context, path: str, modules: dict, outcome: str | 
         return "its package has no such file"
     if outcome == "link":
         return "its package has a link there, not a file"
+    if outcome == "ghost":
+        return "its package lists it as a file made on the server, not one it ships"
     if isinstance(raw, dict) and raw.get("outcome") == "not_checked":
         return str(raw.get("reason") or "not checked")
     if isinstance(raw, dict):
@@ -1006,6 +1008,15 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
     )  # fmt: skip
 
 
+# The signed package contradicts the server (#216): a different file, no such
+# file (the server claims an owner that doesn't ship it), or a link there.
+WHAT_THE_PACKAGE_SAYS = {
+    "differs": "not the file in {package}",
+    "absent": "{package}, which the server says owns it, has no such file",
+    "link": "{package} has a link there, not a file",
+}
+
+
 def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list[Finding]:
     """High findings for modules that aren't their package's file although
     they haven't changed since the baseline, or there is no baseline yet
@@ -1017,9 +1028,11 @@ def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list
     for path, result in sorted(((context.official or {}).get("files") or {}).items()):
         if not isinstance(result, dict) or result.get("how") != "unchanged" or path in reported:
             continue  # (a module changed in mode only is the change's finding)
-        if result.get("outcome") != "differs" or official_result(context, path, modules) is None:
+        outcome = result.get("outcome")
+        if outcome not in WHAT_THE_PACKAGE_SAYS or official_result(context, path, modules) is None:
             continue
         package = f"{result.get('package')} {result.get('version')}"
+        says = WHAT_THE_PACKAGE_SAYS[outcome].format(package=package)
         if context.since_baseline is not None:
             when = "unchanged since the baseline: it was already so when the baseline was taken"
         elif context.no_baseline == "no baseline yet":
@@ -1032,7 +1045,7 @@ def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list
                 f"A PAM module differs from {distribution}'s package for the installed version",
                 COMPROMISE,
                 "high",
-                f"{path}: not the file in {package}; {when}",
+                f"{path}: {says}; {when}",
                 [f"path:{path}"],
                 [{"item": ["pam", path]}],
                 variant="differs",

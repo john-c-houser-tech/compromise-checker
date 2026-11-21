@@ -854,7 +854,7 @@ def test_rpm_ghost_files_are_skipped_not_refused(pinned):
         Lookup("rocky", "9", "sssd-client", "2.9.9-3.el9", "x86_64")
     )
     assert official.found, official.reason
-    assert "/etc/cifs-utils/idmap-plugin" not in official.files
+    assert official.files["/etc/cifs-utils/idmap-plugin"] == {"ghost": True}  # kept as such
     assert compare(official, pam_sss, sha(b"sss"), {}) == "matched"
 
 

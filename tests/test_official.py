@@ -587,7 +587,9 @@ def test_a_genuine_file_whose_mode_or_owner_changed_stays_high():
     after = dict(AFTER, pam={UNIX: {"sha256": BAD, "size": 2, "mode": "0666", "uid": 33}})
     found = pam_findings(BEFORE, after, FakeVerifier({UNIX: {"sha256": BAD}}))
     assert [(f.band, f.variant) for f in found] == [("high", "changed")]
-    assert "its content is Ubuntu's, but its mode, uid changed" in found[0].summary
+    assert "its content is Ubuntu's, but it is writable by others than root, uid 33" in (
+        found[0].summary
+    )
 
 
 def test_new_package_only_when_the_baseline_s_list_shows_it_wasn_t_there():
@@ -712,4 +714,39 @@ def test_an_added_file_s_own_mode_and_owner_aren_t_changes():
     found = pam_findings(
         BEFORE, after, FakeVerifier({UNIX: {"sha256": BAD}, new: {"sha256": GOOD}})
     )
+    assert titles(found) == [("low", "PAM modules updated by Ubuntu's own packages")]
+
+
+# --- From #215's reviews: dangerous modes and owners -----------------------------------------
+
+
+def test_an_added_module_anyone_can_write_or_not_root_s_is_high():
+    new = "/usr/lib/x86_64-linux-gnu/security/pam_userdb.so"
+    for bad in ({"mode": "0666"}, {"mode": "4755"}, {"uid": 1000}, {"gid": 1000}):
+        item = {"sha256": GOOD, "mode": "0644", "uid": 0, "gid": 0, **bad}
+        after = dict(
+            AFTER, pam={**AFTER["pam"], new: item}, owners={**AFTER["owners"], new: owner()}
+        )
+        found = pam_findings(
+            BEFORE, after, FakeVerifier({UNIX: {"sha256": BAD}, new: {"sha256": GOOD}})
+        )
+        flagged = [f for f in found if new in f.summary]
+        assert [(f.band, f.variant) for f in flagged] == [("high", "added")], bad
+
+
+def test_a_mode_or_owner_change_alone_is_high_when_it_leaves_the_module_dangerous():
+    same = {"sha256": GOOD, "size": 1}
+    before = dict(BEFORE, pam={UNIX: dict(same, mode="0644", uid=0)})
+    opened = dict(AFTER, pam={UNIX: dict(same, mode="0666", uid=0)}, packages=BEFORE["packages"])
+    found = pam_findings(before, opened, FakeVerifier({UNIX: {"sha256": GOOD}}))
+    assert [(f.band, f.variant) for f in found] == [("high", "changed")]
+    assert "writable by others than root" in found[0].summary
+    harmless = dict(opened, pam={UNIX: dict(same, mode="0755", uid=0)})
+    assert pam_findings(before, harmless, FakeVerifier({UNIX: {"sha256": GOOD}})) == []
+
+
+def test_a_harmless_mode_change_with_an_update_is_still_the_update():
+    before = dict(BEFORE, pam={UNIX: {"sha256": GOOD, "size": 1, "mode": "0644", "uid": 0}})
+    after = dict(AFTER, pam={UNIX: {"sha256": BAD, "size": 2, "mode": "0755", "uid": 0}})
+    found = pam_findings(before, after, FakeVerifier({UNIX: {"sha256": BAD}}))
     assert titles(found) == [("low", "PAM modules updated by Ubuntu's own packages")]

@@ -103,6 +103,7 @@ def verify_pam(
                 "reason": f"couldn't check it: {type(exc).__name__}",
                 "how": target.how,
                 "sha256": target.sha256,
+                **({"link_target": target.link_target} if target.link_target else {}),
             }
     return {
         "version": OFFICIAL_VERSION,

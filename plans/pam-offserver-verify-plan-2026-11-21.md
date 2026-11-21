@@ -302,7 +302,15 @@ version 2); and an added file's own mode and owner were read as changes (now onl
 was there before). Three runs, six Nanodes for minutes each: about two cents.
 
 Also in V.6: the installer adds `gpgv` (Ubuntu) and `gnupg2` (Rocky), and the install guide says
-what the machine reaches out to. The scoring calibration (fresh servers) isn't rerun: a fresh
+what the machine reaches out to.
+
+From #215's two reviews: a PAM module that others than root can write, that is setuid, setgid or
+sticky, or that root doesn't own is always high, added or changed, the package's own content or
+not, and even when only its mode or owner changed (that used to make no finding at all); a
+harmless mode change beside a genuine update doesn't stop it counting as the update. **For the
+next release:** an install that is only ever updated gets no new system packages, and Ubuntu
+26.04's apt may no longer bring `gpgv` (it prefers `sqv`); check a fresh 26.04 image, and if
+`gpgv` is missing, say in the release notes to install it (or have the verifier fall back). The scoring calibration (fresh servers) isn't rerun: a fresh
 server has no baseline to differ from, so nothing here changes its score; the golden cases
 moved only in the scoring version's number.
 

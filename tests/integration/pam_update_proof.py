@@ -46,7 +46,7 @@ PAM_PACKAGES = "libpam0g libpam-modules libpam-modules-bin libpam-runtime"
 # Back to an older official version: Ubuntu's release pocket, Rocky's vault.
 OLDER = {
     "ubuntu24.04": (
-        "set -e; apt-get update -q >/dev/null;"
+        "set -e; apt-get -o DPkg::Lock::Timeout=900 update -q >/dev/null;"
         " v=$(apt-cache madison libpam-modules"
         " | awk -F'|' '$3 ~ / noble\\/main/ {gsub(/ /, \"\", $2); print $2; exit}');"
         ' [ -n "$v" ] || { echo "no release version found" >&2; exit 1; };'
@@ -55,9 +55,12 @@ OLDER = {
     ),
     # Only when no newer pam is waiting already (dnf check-update says 100 when one is).
     "rocky9": (
-        "dnf -q check-update pam >/dev/null; [ $? -eq 100 ] || rpm -Uvh --oldpackage"
+        "dnf -q check-update pam >/dev/null; waiting=$?;"
+        " [ $waiting -eq 100 ] || { rpm -Uvh --oldpackage"
         " https://dl.rockylinux.org/vault/rocky/9.8/BaseOS/x86_64/os/Packages/p/"
-        "pam-1.5.1-28.el9.x86_64.rpm >/dev/null; rpm -q pam"
+        "pam-1.5.1-28.el9.x86_64.rpm >/dev/null || exit 1; };"
+        " dnf -q check-update pam >/dev/null; [ $? -eq 100 ] || { echo 'no update waiting' >&2;"
+        " exit 1; }; rpm -q pam"
     ),
 }
 UPDATE = {

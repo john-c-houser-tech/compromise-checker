@@ -893,8 +893,31 @@ def _a(name: str) -> str:
     return ("an " if name[:1] in "AEIOUaeiou" else "a ") + name
 
 
-# Changes a package's own file can't account for: the verifier compares content only.
+# Changes the verifier, which compares content only, can't judge.
 NOT_CONTENT = {"mode", "uid", "gid"}
+CONTENT = {"sha256", "content_sha256", "size", "inode", "link_target"}
+
+
+def _unsafe(item: dict) -> str | None:
+    """What makes a PAM module dangerous whatever its content (anyone who
+    can write it can change what logging in does), or None. Links are left
+    out: their own mode is always 0777 and their owner can't change where
+    they lead."""
+    if item.get("type") == "l":
+        return None
+    problems = []
+    try:
+        mode = int(str(item.get("mode")), 8)
+    except ValueError:
+        mode = None
+    if mode is not None and mode & 0o022:
+        problems.append("writable by others than root")
+    if mode is not None and mode & 0o7000:
+        problems.append("setuid, setgid or sticky")
+    for field in ("uid", "gid"):
+        if isinstance(item.get(field), int) and item[field] != 0:
+            problems.append(f"{field} {item[field]}, not root")
+    return ", ".join(problems) or None
 
 
 def _why_not_checked(context: Context, path: str, modules: dict, outcome: str | None) -> str:
@@ -922,9 +945,8 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
     new = context.new_since_previous("pam", path)
     outcome = (result or {}).get("outcome")
     package = f"{(result or {}).get('package')} {(result or {}).get('version')}"
-    # Only a file that was there before can have its mode or owner changed.
-    others = sorted(NOT_CONTENT & set(fields or {})) if how == "changed" else []
-    if outcome == "matched" and not others:
+    unsafe = _unsafe(modules.get(path) or {})
+    if outcome == "matched" and not unsafe:
         older = result.get("older_than_baseline")
         older_seen = result.get("older_than_seen")
         if older is False and older_seen is False and not result.get("new_package"):
@@ -961,13 +983,16 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
             ref, new=new, variant="differs",
         )  # fmt: skip
     note = ""
-    if outcome == "matched":  # the content is the package's, but its mode or owner changed
-        note = f" (its content is {distribution}'s, but its {', '.join(others)} changed)"
-    elif context.official is not None:
-        note = (
-            f" (not checked against {distribution}'s package: "
-            f"{_why_not_checked(context, path, modules, outcome)})"
-        )
+    if outcome == "matched":  # the package's own content, in a dangerous state
+        note = f" (its content is {distribution}'s, but it is {unsafe})"
+    else:
+        if unsafe:
+            note = f" (it is {unsafe})"
+        if context.official is not None and (CONTENT & set(fields or {}) or how == "added"):
+            note += (
+                f" (not checked against {distribution}'s package: "
+                f"{_why_not_checked(context, path, modules, outcome)})"
+            )
     if how == "added":
         return Finding(
             "pam.changes", "A new file in a PAM module directory", COMPROMISE, "high",
@@ -1068,8 +1093,11 @@ def pam_changes(context: Context) -> list[Finding]:
             for path, fields in entries.items():
                 if "/security/" not in path:
                     continue
+                # A change in content, or a mode or owner change that leaves the
+                # module dangerous (a harmless one, a package's own, is no sign).
                 if how == "changed" and not (
-                    {"sha256", "content_sha256", "size", "inode", "link_target"} & set(fields)
+                    CONTENT & set(fields)
+                    or (NOT_CONTENT & set(fields) and _unsafe(modules.get(path) or {}))
                 ):
                     continue
                 result = official_result(context, path, modules)

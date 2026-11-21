@@ -1077,3 +1077,71 @@ def test_an_ubuntu_pro_esm_version_says_so_without_searching():
     official = ubuntu_verifier(site).package(esm)
     assert "Ubuntu Pro (ESM)" in official.reason
     assert site.asked == []
+
+
+# === From PR #213's reviews: the signed lists kept on disk, the clock, the vaults ==========
+
+
+@needs_gpgv
+def test_signed_lists_are_kept_only_once_they_check_out(pinned, tmp_path):
+    site = Site()
+    site.ubuntu(pinned, ARCHIVE, "noble-security", [("libpam-modules", NOBLE.version, PAM)])
+    url = f"{ARCHIVE}/dists/noble-security/InRelease"
+    genuine = site.files[url]
+    site.files[url] = b"<html>captive portal</html>"
+    lists = tmp_path / "lists"
+    first = Verifier(None, fetcher=site, ubuntu_archive=ARCHIVE, ubuntu_snapshot=None,
+                     launchpad=None, lists_dir=lists).package(NOBLE)  # fmt: skip
+    assert not first.found
+    assert not any(p.name.startswith("inrelease-") for p in lists.glob("*"))  # not kept
+    site.files[url] = genuine
+    second = Verifier(None, fetcher=site, ubuntu_archive=ARCHIVE, ubuntu_snapshot=None,
+                      launchpad=None, lists_dir=lists).package(NOBLE)  # fmt: skip
+    assert second.found
+    kept = [p for p in lists.glob("inrelease-*")]
+    assert len(kept) == 1 and kept[0].read_bytes() == genuine
+    # Kept: the next run reads the list (and its index) from disk, checked again.
+    site.asked.clear()
+    third = Verifier(None, fetcher=site, ubuntu_archive=ARCHIVE, ubuntu_snapshot=None,
+                     launchpad=None, lists_dir=lists).package(NOBLE)  # fmt: skip
+    assert third.found
+    assert not any(u.endswith(("InRelease", "Packages.xz")) or "by-hash" in u for u in site.asked)
+    # A kept copy that no longer checks out is dropped and fetched again, once.
+    kept[0].write_bytes(b"damaged")
+    site.asked.clear()
+    fourth = Verifier(None, fetcher=site, ubuntu_archive=ARCHIVE, ubuntu_snapshot=None,
+                      launchpad=None, lists_dir=lists).package(NOBLE)  # fmt: skip
+    assert fourth.found and site.asked.count(url) == 1
+    assert kept[0].read_bytes() == genuine
+
+
+def test_a_kept_list_is_never_read_through_a_link(tmp_path):
+    lists = tmp_path / "lists"
+    lists.mkdir()
+    (tmp_path / "elsewhere").write_bytes(b"x")
+    (lists / "inrelease-x").symlink_to(tmp_path / "elsewhere")
+    ubuntu = deb.Ubuntu(Site(), ARCHIVE, SNAP, None, lists_dir=lists)
+    assert ubuntu._kept("inrelease-x", None, 100) is None
+    (lists / "big").write_bytes(b"x" * 200)
+    assert ubuntu._kept("big", None, 100) is None
+
+
+def test_the_clock_starts_at_the_first_download(web):
+    import time
+
+    fetcher = HttpFetcher(deadline=1.0)
+    time.sleep(1.2)  # parsing a big bundle, say
+    assert fetcher.get(f"{web}/file", 100_000) == _Handler.body
+
+
+@needs_gpgv
+def test_vaults_can_be_left_out(pinned):
+    site = Site()
+    lookup = Lookup("almalinux", "9", "pam", "1.5.1-28.el9_8.1", "x86_64")
+    site.files["https://vault.almalinux.org/"] = b'<a href="9.8/">'
+    url = (
+        "https://vault.almalinux.org/9.8/BaseOS/x86_64/os/Packages/pam-1.5.1-28.el9_8.1.x86_64.rpm"
+    )
+    site.files[url] = make_rpm(pinned, release="28.el9_8.1")
+    assert not Verifier(None, fetcher=site, vaults=False).package(lookup).found
+    assert not any("vault" in u for u in site.asked)

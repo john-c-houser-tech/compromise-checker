@@ -214,7 +214,10 @@ def load_official(store: Store, row: Any, identity: x25519.Identity) -> dict[str
     distribution's packages (checker.official), if any."""
     from checker.official import OFFICIAL_VERSION
 
-    found = _load_derived(store, row, identity, "official", OFFICIAL_VERSION)
+    try:
+        found = _load_derived(store, row, identity, "official", OFFICIAL_VERSION)
+    except EvidenceError:
+        return None  # damaged: these results can be made again, so they're treated as missing
     return json.loads(found[0]) if found else None
 
 

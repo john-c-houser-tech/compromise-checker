@@ -183,6 +183,7 @@ def test_older_configuration_files_get_the_advisor_off(base):
         ("updates.check", "off", False),
         ("verify.enabled", "off", False),
         ("verify.seconds_per_server", "120", 120),
+        ("verify.older_versions", "off", False),
         (
             "verify.ubuntu_archive",
             "https://mirror.example.org/ubuntu",
@@ -225,7 +226,7 @@ def test_every_setting_round_trips(base, key, text, value):
 
 def test_the_table_lists_every_setting_tested():
     # advisor.api is tested with base_url, which it needs (test_advisor_endpoints).
-    assert len(SETTABLE) == 30
+    assert len(SETTABLE) == 31
 
 
 @pytest.mark.parametrize(

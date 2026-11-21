@@ -311,6 +311,30 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
   sent.
 - The assessment carries `official_files` (counts by outcome, reasons) and a note for every
   reason a changed module wasn't checked. Tests never download (an autouse guard).
+- **From #213's two reviews:**
+  - A changed module the baseline recorded no owner for (its owner list otherwise complete) is
+    not checked; a baseline owner list that wasn't complete counts as unknown, like 0.1.3's.
+  - Every result says the baseline's version and whether this one is older, `None` when not
+    known (an incomplete baseline package list, say). **For V.5: only `older_than_baseline is
+    False` may let a change count as an update**, and a module added by a package that wasn't
+    installed at the baseline (`new_package`) is never "updated by the distribution".
+  - The package's architecture is held to the baseline's; a package listed twice for one name
+    and architecture (snapshot version 18 marks it) isn't checked.
+  - Rocky Linux and AlmaLinux are held to the baseline's major release only (9.5 to 9.6 is an
+    ordinary update); Ubuntu to its whole release.
+  - Each result records the hash it compared (V.5 should require it to be the current file's).
+  - Failures on this machine's side (network, time, gpgv, an error) are marked `transient`,
+    stored, and asked again whenever a verifier is given. In one run, once a host finds the
+    distributions' servers out of reach, its later hosts aren't asked (checked next run).
+  - One lookup per package version, however many modules it changed. Nothing the server sends
+    can stop the step: each file's check fails alone, as "not checked".
+  - The lists cache keeps a list only once it has checked out, drops a kept copy that no longer
+    does (fetching once more), reads at most the size limit and never through a link.
+  - The clock for a server starts at its first download, not before its bundle is parsed.
+  - `verify.older_versions` (on) turns off the dated copies, Launchpad and the vaults; the
+    policy and `config show` say a mirror replaces only the current lists, and what a request
+    reveals (release, version, architecture, the User-Agent, and by its timing that some
+    server's PAM changed).
 
 ## V.3 as built (2026-11-21)
 

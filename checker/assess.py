@@ -270,7 +270,9 @@ def official_results(
     """This collection's PAM module results: stored ones made against the
     same baseline, else (with a verifier) checked now and stored."""
     stored = load_official(store, row, identity)
-    if stored_is_current(stored, baseline_id):
+    # Results that failed on this machine's side (network, time) are asked
+    # again whenever a verifier is at hand.
+    if stored_is_current(stored, baseline_id, retrying=verifier is not None):
         return stored
     if verifier is None or not official_targets(snapshot, since_baseline):
         return None

@@ -349,6 +349,11 @@ class Verify(BaseModel):
 
     enabled: bool = True
     seconds_per_server: int = Field(default=60, ge=5, le=900)
+    # Versions no longer in the current lists: Ubuntu's dated copies (and
+    # Launchpad's record of when a version was published), the Rocky Linux
+    # and AlmaLinux vaults. Off: those hosts are never asked, and such a
+    # version is "not checked".
+    older_versions: bool = True
     ubuntu_archive: str | None = Field(default=None, pattern=r"^https?://\S+$")
     rocky: str | None = Field(default=None, pattern=r"^https?://\S+$")
     almalinux: str | None = Field(default=None, pattern=r"^https?://\S+$")

@@ -28,6 +28,7 @@ def snap(
     packages=None,
     packages_complete=True,
     merged=None,
+    owners_complete=True,
 ):
     sections = {
         "host": Section({"os": {"id": os[0], "version_id": os[1]}} if os else {}),
@@ -36,7 +37,7 @@ def snap(
     }
     live = {"system_files_summary": {"merged_dirs": merged or {}}}
     if owners is not None:
-        live["pam_owners"] = {"complete": True, "owners": owners}
+        live["pam_owners"] = {"complete": owners_complete, "owners": owners}
     return Snapshot({"masking_version": 6, "full": True}, sections, live=live)
 
 
@@ -231,7 +232,6 @@ def pam_records(sha256, version):
     )  # fmt: skip
 
 
-@pytest.mark.sqlite_only
 def test_analyze_checks_once_stores_the_results_and_a_rebuild_uses_them(home):
     _, store, identity, config = home
     add_bundle(home, "b1", 0, pam_records(GOOD, "1.5.3-5ubuntu5.6"))
@@ -251,7 +251,6 @@ def test_analyze_checks_once_stores_the_results_and_a_rebuild_uses_them(home):
     assert len(verifier.asked) == 1
 
 
-@pytest.mark.sqlite_only
 def test_analyze_says_when_changed_modules_werent_checked(home):
     _, store, identity, config = home
     add_bundle(home, "b1", 0, pam_records(GOOD, "1.5.3-5ubuntu5.6"))
@@ -266,3 +265,148 @@ def test_analyze_says_when_changed_modules_werent_checked(home):
     )  # fmt: skip
     assert failed["official_files"]["counts"] == {"not_checked": 1}
     assert any("couldn't be checked" in n and "no network" in n for n in failed["notes"])
+
+
+# --- From #213's reviews ---------------------------------------------------------------------
+
+
+def test_a_changed_module_the_baseline_recorded_no_owner_for_is_not_checked():
+    # The baseline listed its owners in full but not this one (unowned, or hand-installed).
+    before = dict(BEFORE, owners={"/other": owner()})
+    result = check(before, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))["files"][UNIX]
+    assert "at the baseline" in result["reason"]
+    # A baseline owner list cut short can't vouch: treated like a 0.1.3 baseline.
+    cut = dict(BEFORE, owners={"/other": owner()}, owners_complete=False)
+    result = check(cut, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))["files"][UNIX]
+    assert result["outcome"] == "matched" and result["baseline_owner_unknown"] is True
+
+
+def test_versions_unknown_at_the_baseline_are_said_to_be_unknown():
+    incomplete = dict(BEFORE, packages_complete=False)
+    result = check(incomplete, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))["files"][UNIX]
+    assert result["baseline_version"] is None and result["older_than_baseline"] is None
+    same = check(
+        BEFORE, dict(AFTER, packages=BEFORE["packages"]), FakeVerifier({UNIX: {"sha256": BAD}})
+    )
+    assert same["files"][UNIX]["older_than_baseline"] is False  # the same version: not older
+
+
+def test_an_added_module_from_a_package_new_since_the_baseline_says_so():
+    new = "/usr/lib/x86_64-linux-gnu/security/pam_sss.so"
+    after = dict(
+        AFTER,
+        pam={**AFTER["pam"], new: {"sha256": GOOD}},
+        owners={**AFTER["owners"], new: owner("libpam-sss")},
+        packages={**AFTER["packages"], "libpam-sss amd64": {"version": "2.9"}},
+    )
+    result = check(BEFORE, after, FakeVerifier({new: {"sha256": GOOD}}))["files"][new]
+    assert result["outcome"] == "matched" and result["new_package"] is True
+    assert result["older_than_baseline"] is None
+
+
+def test_rocky_minor_releases_are_the_same_release_ubuntu_s_are_not():
+    def rocky(release, version):
+        return dict(
+            os=("rocky", release),
+            pam={"/usr/lib64/security/pam_unix.so": {"sha256": GOOD if version == "1" else BAD}},
+            owners={"/usr/lib64/security/pam_unix.so": owner("pam", "x86_64")},
+            packages={"pam x86_64": {"version": f"1.5.1-{version}.el9"}},
+        )
+
+    verifier = FakeVerifier({"/usr/lib64/security/pam_unix.so": {"sha256": BAD}})
+    result = check(rocky("9.5", "1"), rocky("9.6", "2"), verifier)["files"]
+    assert result["/usr/lib64/security/pam_unix.so"]["outcome"] == "matched"
+    assert verifier.asked[0].release == "9.6"
+    other = check(rocky("9.5", "1"), rocky("10.0", "2"), FakeVerifier())["files"]
+    assert "isn't the baseline's" in other["/usr/lib64/security/pam_unix.so"]["reason"]
+
+
+def test_the_package_s_architecture_and_duplicates_are_held():
+    owners = {UNIX: owner("libpam-tmpdir", arch=None)}
+    before = dict(BEFORE, owners=owners, packages={"libpam-tmpdir amd64": {"version": "1"}})
+    after = dict(AFTER, owners=owners, packages={"libpam-tmpdir all": {"version": "2"}})
+    result = check(before, after, FakeVerifier({UNIX: {"sha256": BAD}}))["files"][UNIX]
+    assert "architecture isn't the baseline's" in result["reason"]
+    twice = dict(AFTER, packages={"libpam-modules amd64": {"version": "2", "duplicate": True}})
+    result = check(BEFORE, twice, FakeVerifier({UNIX: {"sha256": BAD}}))["files"][UNIX]
+    assert "exactly one installed version" in result["reason"]
+
+
+def test_odd_values_from_the_server_never_stop_the_step():
+    result = check(BEFORE, dict(AFTER, merged=["/lib"]), FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert result["files"][UNIX]["outcome"] == "matched"
+
+    class Broken:
+        def package(self, lookup):
+            raise RuntimeError("boom")
+
+    result = check(BEFORE, AFTER, Broken())["files"][UNIX]
+    assert result["outcome"] == "not_checked" and "RuntimeError" in result["reason"]
+    assert result["sha256"] == BAD
+
+
+def test_one_package_update_is_asked_about_once():
+    paths = [f"/usr/lib/x86_64-linux-gnu/security/pam_{i}.so" for i in range(40)]
+    before = dict(
+        BEFORE, pam={p: {"sha256": GOOD} for p in paths}, owners={p: owner() for p in paths}
+    )
+    after = dict(AFTER, pam={p: {"sha256": BAD} for p in paths}, owners={p: owner() for p in paths})
+    verifier = FakeVerifier({p: {"sha256": BAD} for p in paths})
+    found = check(before, after, verifier)["files"]
+    assert len(found) == 40 and len(verifier.asked) == 1
+
+
+def test_failures_on_this_machine_s_side_are_marked_and_asked_again():
+    class Offline(FakeVerifier):
+        def package(self, lookup):
+            self.asked.append(lookup)
+            return Official(lookup, reason="couldn't download: no network", transient=True)
+
+    results = check(BEFORE, AFTER, Offline())
+    assert results["files"][UNIX]["transient"] is True
+    assert official.stored_is_current(results, "b0")
+    assert not official.stored_is_current(results, "b0", retrying=True)
+    assert official.summary(results)["transient"] == 1
+    assert official.unreachable({"official_files": official.summary(results)})
+    matched = check(BEFORE, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert not official.unreachable({"official_files": official.summary(matched)})
+    assert not official.unreachable({"official_files": None}) and not official.unreachable(None)
+
+
+def test_older_versions_can_be_turned_off(tmp_path):
+    from checker.evidence import Verify
+
+    verifier = official.verifier_for(Verify(older_versions=False), tmp_path)
+    assert verifier.ubuntu.snapshot is None and verifier.ubuntu.launchpad is None
+    assert verifier.rpm.vaults is False
+
+
+def test_analyze_asks_again_after_a_failure_on_this_machine_s_side(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, pam_records(GOOD, "1.5.3-5ubuntu5.6"))
+    analyze(store, "web01", identity, config.recipients)
+    add_bundle(home, "b2", 10, pam_records(BAD, "1.5.3-5ubuntu5.7"))
+
+    class Offline(FakeVerifier):
+        def package(self, lookup):
+            self.asked.append(lookup)
+            return Official(lookup, reason="couldn't download: no network", transient=True)
+
+    analyze(store, "web01", identity, config.recipients, verifier=Offline())
+    good = FakeVerifier({UNIX: {"sha256": BAD}})
+    again = analyze(store, "web01", identity, config.recipients, "b2", verifier=good)
+    assert again["official_files"]["counts"] == {"matched": 1} and len(good.asked) == 1
+
+
+def test_config_show_says_what_is_downloaded_and_from_where():
+    from checker.evidence import Config, Verify
+    from checker.settings import describe
+
+    def line(**verify):
+        config = Config(recipients=["age1x"], verify=Verify(**verify))
+        return next(s for s in describe(config) if s.startswith("Changed PAM modules"))
+
+    assert "the distributions' own servers" in line() and "snapshot.ubuntu.com" in line()
+    assert "your mirrors (https://m.test/u)" in line(ubuntu_archive="https://m.test/u")
+    assert "aren't looked for" in line(older_versions=False)
+    assert "not checked" in line(enabled=False)

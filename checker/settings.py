@@ -148,11 +148,22 @@ def _verify_line(config: Config) -> str:
             " (verify.enabled is off), so a routine PAM update reads as a break-in"
         )
     mirrors = [m for m in (verify.ubuntu_archive, verify.rocky, verify.almalinux) if m]
+    older = (
+        "; for older versions also Ubuntu's dated copies (snapshot.ubuntu.com), Launchpad"
+        " and the Rocky and AlmaLinux vaults (verify.older_versions turns that off)"
+        if verify.older_versions
+        else "; older versions aren't looked for (verify.older_versions is off)"
+    )
     return (
         "Changed PAM modules: checked against the distribution's own packages, which this"
         " machine downloads (public files, by name and version; no server names or findings)"
-        + (f" from your mirrors ({', '.join(mirrors)})" if mirrors else "")
-        + f", {verify.seconds_per_server} seconds a server at most"
+        + (
+            f" from your mirrors ({', '.join(mirrors)}) for the current lists"
+            if mirrors
+            else " from the distributions' own servers"
+        )
+        + older
+        + f"; {verify.seconds_per_server} seconds a server at most"
     )
 
 
@@ -357,6 +368,12 @@ SETTABLE: dict[str, Setting] = {
             ("verify", "seconds_per_server"),
             int,
             "the time that check gets for each server (default 60)",
+        ),
+        Setting(
+            ("verify", "older_versions"),
+            _bool,
+            "on (default) or off: whether versions no longer in the current lists are looked"
+            " for in Ubuntu's dated copies and the Rocky and AlmaLinux vaults",
         ),
         Setting(("verify", "ubuntu_archive"), _optional, "your own Ubuntu mirror, or none"),
         Setting(("verify", "rocky"), _optional, "your own Rocky Linux mirror, or none"),

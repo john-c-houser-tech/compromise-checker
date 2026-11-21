@@ -37,8 +37,8 @@ collects.**
 - By default the tool's machine downloads public files: the list of this
   tool's releases, and, when a PAM module on a server has changed, the
   distribution's own package for it, to check the change. Those requests name
-  a public file and carry nothing about your servers or evidence; each can be
-  turned off (section 10).
+  a public file and its version, and carry no server's name, finding or
+  evidence; each can be turned off (section 10).
 - No telemetry. The tool never contacts NouriLoop LLC.
 
 ## 3. Authorization and accountability
@@ -429,13 +429,17 @@ version, are on until you turn them off):
   or appeared since its baseline (on by default; `verify.enabled` turns it off). The tool's machine downloads
   the package the server says owns the file, for the version the server says is installed, checks its signature
   with keys built into the tool, and compares the file, so that a routine update isn't reported as a break-in.
-  The requests go to Ubuntu's archive and its dated copies (with Launchpad's public record of when a version was
-  published), and to Rocky Linux's and AlmaLinux's repositories and vaults, or to mirrors you name
-  (`verify.ubuntu_archive`, `verify.rocky`, `verify.almalinux`). Each names a public package file and its
-  version, so whoever runs the mirror can see that someone fetched, say, a given version of `libpam-modules`; no
-  server's name or address, finding or evidence is sent. What was downloaded is kept on the tool's machine, so a
-  package is fetched once for the whole fleet. Without network access the change is reported as it always was,
-  with a note saying it couldn't be checked.
+  The requests go to Ubuntu's archive, and to Rocky Linux's and AlmaLinux's current repositories, or to mirrors
+  you name for those (`verify.ubuntu_archive`, `verify.rocky`, `verify.almalinux`). For a version no longer in
+  the current lists they also go to Ubuntu's dated copies (snapshot.ubuntu.com), with a question to Launchpad
+  (api.launchpad.net) about when that version was published, and to the Rocky Linux and AlmaLinux vaults; a
+  mirror you name doesn't replace these, and `verify.older_versions` turns them off. Each request names a public
+  package file or list, and its release, version and architecture, and says it comes from `compromise-checker`
+  and its version. Whoever runs those servers can therefore see that someone fetched, say, a given version of
+  `libpam-modules` for Ubuntu 24.04, and the timing suggests that some server's PAM changed; no server's name
+  or address, finding or evidence is sent. What was downloaded is kept on the tool's machine, so a package is
+  fetched once for the whole fleet. Without network access the change is reported as it always was, with a
+  note saying it couldn't be checked.
 - a request to GitHub once a day for the public list of this tool's releases, and for the newest one's signed
   description, from the web interface when someone with full access opens a page. It carries nothing about your
   machine or servers beyond what any download does: the address it comes from. The setting `updates.check`

@@ -226,8 +226,11 @@ _SAFE = re.compile(r"[A-Za-z0-9._+~^-]+")
 class Rpm:
     """Looks packages up for one verification run."""
 
-    def __init__(self, fetcher: Fetcher, mirrors: dict[str, dict] | None = None):
+    def __init__(
+        self, fetcher: Fetcher, mirrors: dict[str, dict] | None = None, vaults: bool = True
+    ):
         self.fetcher = fetcher
+        self.vaults = vaults  # off: only the current repositories are asked
         self.systems = {}
         for name, config in SYSTEMS.items():
             given = (mirrors or {}).get(name, {})
@@ -272,6 +275,8 @@ class Rpm:
         """The current repositories, then the vault's minors: the one the
         release names first (el9_8.1 -> 9.8), then from the newest down."""
         yield config["current"].format(major=major)
+        if not self.vaults:
+            return
         minors = self._vault_minors(config, major)
         named = re.search(rf"\.el{major}_(\d+)", rel)
         if named and f"{major}.{named.group(1)}" in minors:

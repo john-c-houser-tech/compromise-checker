@@ -3451,7 +3451,8 @@ class SystemFilesTests(FixtureRoot):
         self.write("var/lib/dpkg/diversions", f"{unix}\n{unix}.real\nvim\n".encode())
         records = self.run_with(caps={})
         owners = {r["path"]: r for r in records_named(records, "pam_module_owner")}
-        self.assertEqual(owners[unix], {"path": unix, "package": "vim"})
+        # Both lists name it, so the owner is marked as one of several.
+        self.assertEqual(owners[unix], {"path": unix, "package": "vim", "several": True})
         self.assertEqual(owners[unix + ".real"]["package"], "libpam-modules")
         self.assertEqual(owners[unix + ".real"]["arch"], "amd64")
 
@@ -3471,6 +3472,63 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(
             records_named(records, "pam_owners_summary"), [{"complete": False, "count": 0}]
         )
+
+    def test_only_the_paths_the_pam_listing_walks_count(self):
+        self.fixture()
+        self.write(
+            "var/lib/dpkg/info/mixed.list",
+            b"/usr/lib/jvm/java-17/conf/security/java.policy\n"
+            b"/usr/lib/python3/dist-packages/azure/security/x.py\n"
+            b"/usr/lib/security/pam_filter/upperLOWER\n"
+            b"/usr/lib/security/a/b/too_deep\n"
+            b"/usr/lib/security/pam_ok.so\n",
+        )
+        records = self.run_with(caps={})
+        self.assertEqual(
+            sorted(r["path"] for r in records_named(records, "pam_module_owner")),
+            ["/usr/lib/security/pam_filter/upperLOWER", "/usr/lib/security/pam_ok.so"],
+        )
+
+    def test_exactly_the_limit_is_still_complete(self):
+        self.fixture()
+        self.write(
+            "var/lib/dpkg/info/libpam-modules.list",
+            b"/usr/lib/security/pam_a.so\n/usr/lib/security/pam_b.so\n/usr/share/doc/z\n",
+        )
+        records = self.run_with(caps={}, MAX_PAM_OWNERS=2)
+        self.assertEqual(
+            records_named(records, "pam_owners_summary"), [{"complete": True, "count": 2}]
+        )
+
+    def test_odd_or_huge_names_are_left_out_without_breaking_the_stream(self):
+        self.fixture()
+        self.write("var/lib/dpkg/info/libpam-good.list", b"/usr/lib/security/pam_good.so\n")
+        self.write("var/lib/dpkg/info/evil.list", b"/usr/lib/security/" + b"\x01" * 300_000 + b"\n")
+        self.write("var/lib/dpkg/info/" + "p" * 200 + ".list", b"/usr/lib/security/pam_x.so\n")
+        records = self.run_with(caps={})
+        self.assertEqual(
+            [r["path"] for r in records_named(records, "pam_module_owner")],
+            ["/usr/lib/security/pam_good.so"],
+        )
+        self.assertEqual(
+            records_named(records, "pam_owners_summary"), [{"complete": False, "count": 1}]
+        )
+        self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
+
+    def test_a_package_diverting_its_own_module_keeps_its_architecture(self):
+        # DEP17's merged-/usr protection: libpam-modules diverts its own /lib path.
+        self.fixture()
+        os.symlink("usr/lib", Path(self.root, "lib"))
+        unix = "/usr/lib/x86_64-linux-gnu/security/pam_unix.so"
+        self.write("var/lib/dpkg/info/libpam-modules:amd64.list", f"{unix}\n".encode())
+        self.write(
+            "var/lib/dpkg/diversions",
+            b"/lib/x86_64-linux-gnu/security/pam_unix.so\n"
+            b"/lib/x86_64-linux-gnu/security/pam_unix.so.usr-is-merged\nlibpam-modules\n",
+        )
+        records = self.run_with(caps={})
+        owners = {r["path"]: r for r in records_named(records, "pam_module_owner")}
+        self.assertEqual(owners[unix]["arch"], "amd64")
 
     def test_rpm_pam_module_owners_carry_the_package_architecture(self):
         self.fixture()
@@ -3494,16 +3552,32 @@ class SystemFilesTests(FixtureRoot):
             connection.execute("INSERT INTO Packages (blob) VALUES (?)", (blob,))
         connection.commit()
         connection.close()
+        odd = rpm_header(
+            [
+                (1000, 6, "odd"),
+                (1022, 6, "x86_64"),
+                (1029, 2, [0]),
+                (1116, 4, [0]),
+                (1117, 8, ["pam_X.so"]),
+                (1118, 8, ["/usr/lib64/security/"]),
+            ]
+        ).replace(b"pam_X.so", b"pam_\xff.so")  # a name that isn't UTF-8
+        connection = sqlite3.connect(Path(self.root, "var/lib/rpm/rpmdb.sqlite"))
+        connection.execute("INSERT INTO Packages (blob) VALUES (?)", (odd,))
+        connection.commit()
+        connection.close()
         records = self.run_with(caps={})
+        self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
         owners = {r["path"]: r for r in records_named(records, "pam_module_owner")}
         self.assertEqual(
             owners["/usr/lib64/security/pam_pam.so"],
             {"path": "/usr/lib64/security/pam_pam.so", "package": "pam", "arch": "x86_64"},
         )
         self.assertEqual(owners["/usr/lib64/security/pam_sssd-client.so"]["package"], "sssd-client")
+        self.assertEqual(len(owners), 2)  # the undecodable name is left out...
         self.assertEqual(
-            records_named(records, "pam_owners_summary"), [{"complete": True, "count": 2}]
-        )
+            records_named(records, "pam_owners_summary"), [{"complete": False, "count": 2}]
+        )  # ...and the owners aren't called complete
 
     def test_unowned_shared_library_without_execute_bit(self):
         self.fixture()

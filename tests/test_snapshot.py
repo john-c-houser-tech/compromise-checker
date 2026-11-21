@@ -1625,11 +1625,12 @@ def test_pam_modules_owners_are_kept_apart_and_known_only_when_the_collector_say
     ]
     snap = snapshot_of_records(host_records(extra=told), tmp_path)
     assert snap.live["pam_owners"] == {
-        "complete": True,
+        "complete": False,  # one record was dropped: not believed complete
         "owners": {
-            unix: {"package": "libpam-modules", "arch": "amd64"},
-            "/usr/lib/security/x.so": {"package": "x", "arch": None},
+            unix: {"package": "libpam-modules", "arch": "amd64", "several": False},
+            "/usr/lib/security/x.so": {"package": "x", "arch": None, "several": False},
         },
+        "dropped": 1,
     }
     assert "pam_owners" not in snap.sections
     (tmp_path / "cut").mkdir()
@@ -1637,3 +1638,20 @@ def test_pam_modules_owners_are_kept_apart_and_known_only_when_the_collector_say
     cut = snapshot_of_records(host_records(extra=told[:1]), tmp_path / "cut")
     assert cut.live["pam_owners"]["complete"] is False
     assert "pam_owners" not in snapshot_of_records(host_records(), tmp_path / "older").live
+
+
+def test_pam_owners_complete_only_when_the_count_adds_up(tmp_path):
+    unix = "/usr/lib/x86_64-linux-gnu/security/pam_unix.so"
+    one = rec("system_files", "pam_module_owner", path=unix, package="p", several=True)
+    good = [one, rec("system_files", "pam_owners_summary", complete=True, count=1)]
+    snap = snapshot_of_records(host_records(extra=good), tmp_path)
+    assert snap.live["pam_owners"]["complete"] is True
+    assert snap.live["pam_owners"]["owners"][unix]["several"] is True
+    (tmp_path / "short").mkdir()
+    short = [one, rec("system_files", "pam_owners_summary", complete=True, count=2)]
+    assert (
+        snapshot_of_records(host_records(extra=short), tmp_path / "short").live["pam_owners"][
+            "complete"
+        ]
+        is False
+    )

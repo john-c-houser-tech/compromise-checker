@@ -205,6 +205,15 @@ snapshot, verification against recorded package data, and the checks:
   time per server as well as a cap for the run, signed lists kept on disk for a few hours (as
   "Caching" above says; V.2 keeps them only for the run), and the verified results already
   cached by version, so a version is fetched once for the whole fleet.
+- **Finding the version (V.4, from #211's reviews, checked on five real systems):** an owner
+  with an architecture is looked up as `packages["<name> <arch>"]`. dpkg names the architecture
+  only for Multi-Arch: same packages, so an owner without one (Architecture: all, or Multi-Arch:
+  no, such as libpam-tmpdir) is the **single** `packages` entry with that name; none or several
+  is "not checked". Also "not checked", with the reason: an owner marked `several` (more than
+  one package lists the path), an owner with no `packages` entry (dpkg's half-installed states,
+  which the package list leaves out), two rpm entries for one name and architecture (an
+  interrupted dnf), a `packages_pending` collection (rpm's log not yet written back), and
+  directories (the owner list names them too; only files have a digest).
 - **V.5 The check:** `pam.changes` uses the results. The tests are the ten attacks above, end to
   end, plus the ones below.
 - **Held to the baseline (V.4/V.5, from the #210 security review).** Every field the verifier
@@ -282,6 +291,12 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
   architecture. The snapshot keeps them in `live["pam_owners"]`, never compared (snapshot
   version 17). The version comes from the package list (`packages`, keyed by name and
   architecture), so the collector sends no versions of its own.
+- From the reviews: only the paths the PAM listing walks count (the directory, then one or two
+  levels, `*` never crossing `/`), since `/usr/lib/jvm/.../security/` and Python's `security`
+  packages would otherwise fill the limit first. Paths over 4,096 bytes or not UTF-8, and
+  package or architecture names that don't look like dpkg's or rpm's, are left out and the
+  owners called incomplete. A path more than one package lists is marked `several`. The
+  snapshot believes "complete" only when the summary's count matches the records it kept.
 
 ## V.2 as built (PR #210, 2026-11-21)
 

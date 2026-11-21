@@ -29,6 +29,8 @@ SNAPSHOT_VERSION = 17
 # 11: the folders web servers serve; 16: a /run file's content no longer brings back its
 # inode and times; 17: PAM modules' owners (#189)
 
+MAX_PAM_OWNERS = 2000  # the collector sends at most this many (#189)
+
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "host": (
@@ -1279,14 +1281,27 @@ class SnapshotBuilder:
             # distribution's package, so kept in live and never compared. An older
             # collector sends no summary, and then the owners count as unknown.
             owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
-            if isinstance(data.get("package"), str):
-                owners["owners"][data["path"]] = {
+            listed = owners["owners"]
+            if (
+                isinstance(data.get("package"), str)
+                and len(listed) < MAX_PAM_OWNERS
+                and data["path"] not in listed
+            ):
+                listed[data["path"]] = {
                     "package": data["package"],
                     "arch": data.get("arch") if isinstance(data.get("arch"), str) else None,
+                    "several": data.get("several") is True,
                 }
+            else:
+                owners["dropped"] = owners.get("dropped", 0) + 1
         elif name == "pam_owners_summary":
             owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
-            owners["complete"] = data.get("complete") is True
+            # Complete only as the collector says, and only if every record it counted came.
+            owners["complete"] = (
+                data.get("complete") is True
+                and data.get("count") == len(owners["owners"])
+                and not owners.get("dropped")
+            )
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 

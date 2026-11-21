@@ -91,7 +91,10 @@ stores it with the evidence; the manifest carries the version string only.
 ## 3. Result stream
 
 stdout carries a single **gzip** stream. Decompressed, it is **UTF-8 JSON
-Lines**: one JSON object per line, each with a `type` field.
+Lines**: one JSON object per line, each with a `type` field. A file name (or
+other text) holding bytes that aren't UTF-8 is sent with those bytes written
+as `\xff`, so such a name can never stop a module. A real name spelled with
+a backslash and `x` reads the same: both are still reported.
 
 ```
 manifest                       exactly once, first

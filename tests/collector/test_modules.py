@@ -1739,6 +1739,25 @@ class PamTests(FixtureRoot):
         self.assertEqual(files["/usr/lib64/security/pam_unix.so"]["sha256"], expected)
         self.assertEqual(len(records_named(records, "walk_summary")), 1)
 
+    def test_a_module_whose_name_isnt_utf8_is_reported_not_a_crash(self):
+        # Root could otherwise stop the PAM listing (and hide what comes after) with one file.
+        self.write("usr/lib64/security/pam_unix.so", b"\x7fELF")
+        directory = os.path.join(os.fsencode(self.root), b"usr/lib64/security")
+        with open(os.path.join(directory, b"pam_\xff.so"), "wb") as handle:
+            handle.write(b"\x7fELF hidden")
+        os.makedirs(Path(self.root, "etc/pam.d"))
+        with open(os.path.join(os.fsencode(self.root), b"etc/pam.d/odd\xfe"), "wb") as handle:
+            handle.write(b"auth required pam_\xff.so\n")
+        records = collect(self.root, ["pam"])
+        files = {f["path"]: f for f in records_named(records, "module_file")}
+        self.assertIn("/usr/lib64/security/pam_\\xff.so", files)
+        self.assertIn("/usr/lib64/security/pam_unix.so", files)
+        self.assertEqual(
+            files["/usr/lib64/security/pam_\\xff.so"]["sha256"],
+            hashlib.sha256(b"\x7fELF hidden").hexdigest(),
+        )
+        self.assertEqual(records[-1]["modules"]["pam"]["status"], "ok")
+
     def test_linked_module_directory_is_walked_once_at_its_target(self):
         self.write("usr/lib/security/pam_unix.so", b"\x7fELF")
         Path(self.root, "usr/lib64").mkdir(parents=True)

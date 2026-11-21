@@ -161,7 +161,16 @@ class Stream:
 
     def emit(self, obj):
         line = json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n"
-        self._gzip.write(line.encode("utf-8"))
+        try:
+            raw = line.encode("utf-8")
+        except UnicodeEncodeError:
+            # A name holding bytes that aren't UTF-8 (read with surrogateescape):
+            # sent with those bytes escaped ("\xff", as _printable does), never
+            # dropped and never a crash. A file named so must not be able to stop
+            # a module, or an intruder could hide everything after it.
+            line = json.dumps(_escaped(obj), ensure_ascii=False, separators=(",", ":"))
+            raw = (line + "\n").encode("utf-8")
+        self._gzip.write(raw)
         kind = obj["type"]
         if kind == "record":
             self.counts["records"] += 1
@@ -6671,6 +6680,18 @@ def _read_int(absolute):
         return int(text.strip(), 0) if text is not None else None
     except ValueError:
         return None
+
+
+def _escaped(value):
+    """`value` with every text in it (dict keys too) made sendable by
+    _printable; anything else as it is."""
+    if isinstance(value, str):
+        return _printable(value)
+    if isinstance(value, dict):
+        return {_escaped(k): _escaped(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_escaped(v) for v in value]
+    return value
 
 
 def _printable(name):

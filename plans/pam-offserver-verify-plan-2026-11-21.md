@@ -301,7 +301,9 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
 - **Baselines from 0.1.3 have no owners** (side note on V.4): the owner can't be compared, so a
   file that was there at the baseline is checked only if its owning package was installed then
   too, the version is still compared with the baseline's package list, and the assessment's notes
-  say an owner swap can't be ruled out until a new baseline is taken.
+  say an owner swap can't be ruled out until a new baseline is taken. **DECIDED (John,
+  2026-11-21): the note is enough;** the checker doesn't prompt for a new baseline after an
+  upgrade (that would also accept whatever changed since the last one).
 - Ubuntu's signed lists are kept on disk (`CHECKER_HOME/cache/signed-lists`) and checked again
   every time they are used: an InRelease for six hours (a dated copy's for good), an index by
   its hash. Live: the first lookup of an older version took 22 s, the next server's 0.9 s.

@@ -18,6 +18,8 @@ dependencies = [
     "pydantic>=2.14.1",
     "pyrage>=1.4.0",
     "PyYAML>=6.0.3",
+    # zstd for Ubuntu's packages (checker/verify): Python 3.14 has it built in.
+    "backports.zstd>=1.0; python_version < '3.14'",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +49,7 @@ include = ["checker*"]
 [tool.setuptools.package-data]
 # The collector is shipped as a data file and streamed to targets as text;
 # the controller never imports it (DESIGN.md §5.1).
-checker = ["collector/collector.py", "templates/*.html.j2", "profiles/*.yaml"]
+checker = ["collector/collector.py", "templates/*.html.j2", "profiles/*.yaml", "verify/keys/*.asc"]
 "checker.web" = [
   "templates/*.html.j2", "static/*.css", "static/*.svg", "static/*.ico", "static/fonts/*",
 ]

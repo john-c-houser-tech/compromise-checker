@@ -1,0 +1,343 @@
+"""Ubuntu: a package's file hashes, from the archive's signed data only.
+
+The chain (plan, "What is trusted"): `dists/<suite>/InRelease`, checked
+with gpgv against Ubuntu's pinned key -> the `Packages.xz` hash in its
+signed text -> the package's SHA256 line there -> the `.deb`'s hash -> each
+file's SHA-256, read from the `.deb`'s data archive in memory.
+
+A version that has dropped off the current lists is looked for in Ubuntu's
+dated archive copies (snapshot.ubuntu.com), each with its own signed
+InRelease. Launchpad's publishing history only helps choose the copy's
+date: nothing Launchpad says is trusted.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import lzma
+import posixpath
+import tarfile
+import urllib.parse
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+from checker.verify import gpg
+from checker.verify.fetch import Fetcher
+
+try:  # Python 3.14 has zstd; before it, the backport (same interface)
+    from compression import zstd
+except ImportError:  # pragma: no cover - depends on the Python version
+    from backports import zstd
+
+KEYS = ("ubuntu-2018",)
+CODENAMES = {"22.04": "jammy", "24.04": "noble", "26.04": "resolute"}
+ARCHES = ("amd64",)  # arm64 (ports.ubuntu.com) isn't covered yet
+COMPONENTS = ("main", "universe")
+ARCHIVE = "http://archive.ubuntu.com/ubuntu"
+SNAPSHOT = "https://snapshot.ubuntu.com/ubuntu"
+SNAPSHOTS_FROM = datetime(2023, 3, 1, tzinfo=UTC)  # the first dated copies (V.1)
+LAUNCHPAD = "https://api.launchpad.net/1.0"
+POCKETS = {"Release": "", "Updates": "-updates", "Security": "-security"}
+
+MAX_INRELEASE = 4 * 1024 * 1024
+MAX_INDEX = 64 * 1024 * 1024  # a compressed Packages file
+MAX_INDEX_TEXT = 512 * 1024 * 1024
+MAX_DEB = 64 * 1024 * 1024
+MAX_DATA = 512 * 1024 * 1024  # a .deb's unpacked data archive
+MAX_LAUNCHPAD = 4 * 1024 * 1024
+
+
+class PackageError(Exception):
+    """The package couldn't be found or checked; the words say why."""
+
+
+# --- Reading the formats ------------------------------------------------------------------
+
+
+def release_hashes(signed: bytes, suite: str) -> dict[str, tuple[str, int]]:
+    """{index file: (sha256, size)} from an InRelease's signed text, which
+    has to name `suite` (so one suite's signed list can't stand in for
+    another's)."""
+    text = signed.decode("utf-8", "replace")
+    fields, hashes, section = {}, {}, None
+    for line in text.splitlines():
+        if line.startswith(" "):
+            if section == "SHA256":
+                parts = line.split()
+                if len(parts) == 3 and len(parts[0]) == 64 and parts[1].isdigit():
+                    hashes[parts[2]] = (parts[0].lower(), int(parts[1]))
+            continue
+        name, _, value = line.partition(":")
+        section = name
+        fields[name] = value.strip()
+    if fields.get("Suite") != suite:
+        raise PackageError(f"the signed list is for {fields.get('Suite')!r}, not {suite}")
+    return hashes
+
+
+def decompress(data: bytes, name: str, cap: int) -> bytes:
+    """`data` unpacked by its file name's ending, at most `cap` bytes out."""
+    if name.endswith(".zst"):
+        engine = zstd.ZstdDecompressor()
+    elif name.endswith(".xz"):
+        engine = lzma.LZMADecompressor()
+    elif name.endswith(".tar") or name == "data.tar":
+        return data if len(data) <= cap else _too_large(name)
+    else:
+        raise PackageError(f"unsupported compression: {name}")
+    try:
+        out = engine.decompress(data, max_length=cap)
+    except (lzma.LZMAError, zstd.ZstdError) as exc:
+        raise PackageError(f"{name} doesn't unpack: {exc}") from None
+    if not engine.eof:
+        _too_large(name)
+    return out
+
+
+def _too_large(name: str):
+    raise PackageError(f"{name} unpacks to more than the limit")
+
+
+@dataclass(frozen=True)
+class Entry:
+    package: str
+    version: str
+    arch: str
+    filename: str
+    sha256: str
+    size: int
+
+
+def packages_index(text: str) -> dict[tuple[str, str, str], Entry]:
+    """{(package, version, arch): Entry} from a Packages file."""
+    found = {}
+    for stanza in text.split("\n\n"):
+        fields = {}
+        for line in stanza.splitlines():
+            if line and not line.startswith((" ", "\t")):
+                name, _, value = line.partition(":")
+                fields[name] = value.strip()
+        try:
+            entry = Entry(
+                fields["Package"],
+                fields["Version"],
+                fields["Architecture"],
+                fields["Filename"],
+                fields["SHA256"].lower(),
+                int(fields["Size"]),
+            )
+        except (KeyError, ValueError):
+            continue
+        found[(entry.package, entry.version, entry.arch)] = entry
+    return found
+
+
+def ar_members(deb: bytes) -> dict[str, bytes]:
+    """A .deb's members (an `ar` archive), strictly parsed."""
+    if not deb.startswith(b"!<arch>\n"):
+        raise PackageError("not a .deb")
+    members, pos = {}, 8
+    while pos < len(deb):
+        head = deb[pos : pos + 60]
+        if len(head) < 60 or head[58:60] != b"`\n":
+            raise PackageError("a broken .deb member header")
+        name = head[:16].decode("ascii", "replace").strip().rstrip("/")
+        try:
+            size = int(head[48:58].decode("ascii").strip())
+        except ValueError:
+            raise PackageError("a broken .deb member size") from None
+        body = deb[pos + 60 : pos + 60 + size]
+        if len(body) != size or name in members:
+            raise PackageError("a truncated or repeated .deb member")
+        members[name] = body
+        pos += 60 + size + (size % 2)
+    return members
+
+
+def deb_files(deb: bytes) -> dict[str, dict]:
+    """{absolute path: {"sha256": hex} or {"link": target}} for what the
+    .deb's data archive holds, read in memory: nothing is written out, no
+    link is followed, and a path that climbs out ("..") refuses the package."""
+    members = ar_members(deb)
+    names = [n for n in members if n.startswith("data.tar")]
+    if len(names) != 1:
+        raise PackageError("a .deb without exactly one data archive")
+    blob = decompress(members[names[0]], names[0], MAX_DATA)
+    files: dict[str, dict] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as tar:
+            for member in tar:
+                path = _clean(member.name)
+                if path is None:
+                    continue
+                if member.isfile():
+                    handle = tar.extractfile(member)
+                    files[path] = {"sha256": hashlib.sha256(handle.read()).hexdigest()}
+                elif member.issym():
+                    files[path] = {"link": member.linkname}
+                elif member.islnk():
+                    target = _clean(member.linkname)
+                    if target in files:
+                        files[path] = dict(files[target])
+    except tarfile.TarError as exc:
+        raise PackageError(f"the data archive doesn't read: {exc}") from None
+    return files
+
+
+def _clean(name: str) -> str | None:
+    """'./usr/lib/x' -> '/usr/lib/x'; None for the top folder; refuses '..'."""
+    if any(part == ".." for part in name.split("/")):
+        raise PackageError(f"a path that climbs out of the package: {name[:200]}")
+    if name.startswith("./"):
+        name = name[2:]
+    path = posixpath.normpath("/" + name.lstrip("/"))
+    return None if path in ("/", "/.") else path
+
+
+# --- Finding the package ------------------------------------------------------------------
+
+
+class Ubuntu:
+    """Looks packages up for one verification run; signed lists are kept
+    for the run, so a fleet's servers share them."""
+
+    def __init__(
+        self,
+        fetcher: Fetcher,
+        archive: str = ARCHIVE,
+        snapshot: str = SNAPSHOT,
+        launchpad: str | None = LAUNCHPAD,
+        now: datetime | None = None,
+    ):
+        self.fetcher = fetcher
+        self.archive = archive.rstrip("/")
+        self.snapshot = snapshot.rstrip("/") if snapshot else None
+        self.launchpad = launchpad.rstrip("/") if launchpad else None
+        self.now = now or datetime.now(UTC)
+        self._lists: dict[tuple[str, str, str], dict | None] = {}
+
+    def files(self, release: str, package: str, version: str, arch: str):
+        """(files, source address, signer) for the package, or PackageError."""
+        codename = CODENAMES.get(release)
+        if codename is None:
+            raise PackageError(f"Ubuntu {release} isn't covered")
+        if arch not in ARCHES:
+            raise PackageError(f"{arch} isn't covered yet")
+        suites = [codename + "-security", codename + "-updates", codename]
+        hit = self._find([self.archive], suites, package, version, arch)
+        if hit is None and self.snapshot:
+            hit = self._find(
+                self._copies(codename, package, version, arch), None, package, version, arch
+            )
+        if hit is None:
+            raise PackageError(f"{package} {version} isn't in Ubuntu's archive")
+        base, entry, signer = hit
+        deb = self.fetcher.get(f"{base}/{entry.filename}", MAX_DEB)
+        if deb is None:
+            raise PackageError(f"{entry.filename} is listed but not there")
+        if len(deb) != entry.size or hashlib.sha256(deb).hexdigest() != entry.sha256:
+            raise PackageError(f"{entry.filename} doesn't match the signed list")
+        return deb_files(deb), f"{base}/{entry.filename}", signer
+
+    def _find(self, bases, suites, package, version, arch):
+        """The first signed list holding the package: (base, Entry, signer)."""
+        for item in bases:
+            base, suite_list = (item, suites) if suites else item
+            for suite in suite_list:
+                for component in COMPONENTS:
+                    listed = self._list(base, suite, component, arch)
+                    if not listed:
+                        continue
+                    entries, signer = listed
+                    entry = entries.get((package, version, arch)) or entries.get(
+                        (package, version, "all")
+                    )
+                    if entry is not None:
+                        return base, entry, signer
+        return None
+
+    def _list(self, base, suite, component, arch):
+        key = (base, suite, f"{component}/{arch}")
+        if key not in self._lists:
+            self._lists[key] = self._load(base, suite, component, arch)
+        return self._lists[key]
+
+    def _load(self, base, suite, component, arch):
+        release = self.fetcher.get(f"{base}/dists/{suite}/InRelease", MAX_INRELEASE)
+        if release is None:
+            return None
+        try:
+            signed, signer = gpg.verify_clearsigned(release, KEYS)
+        except gpg.SignatureError as exc:
+            raise PackageError(f"{base}/dists/{suite}/InRelease: {exc}") from None
+        hashes = release_hashes(signed, suite)
+        name = f"{component}/binary-{arch}/Packages.xz"
+        if name not in hashes:
+            return None
+        digest, size = hashes[name]
+        data = self.fetcher.get(f"{base}/dists/{suite}/{name}", MAX_INDEX)
+        if data is None or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            raise PackageError(f"{base}/dists/{suite}/{name} doesn't match the signed list")
+        text = decompress(data, name, MAX_INDEX_TEXT).decode("utf-8", "replace")
+        return packages_index(text), signer
+
+    def _copies(self, codename, package, version, arch):
+        """[(dated copy's base, [suite])] that should hold the version,
+        chosen from Launchpad's publishing history (a hint only)."""
+        if not self.launchpad:
+            return []
+        query = urllib.parse.urlencode(
+            {
+                "ws.op": "getPublishedBinaries",
+                "binary_name": package,
+                "exact_match": "true",
+                "version": version,
+                "distro_arch_series": f"{self.launchpad}/ubuntu/{codename}/{arch}",
+                "ws.size": "50",
+            }
+        )
+        raw = self.fetcher.get(f"{self.launchpad}/ubuntu/+archive/primary?{query}", MAX_LAUNCHPAD)
+        try:
+            entries = json.loads(raw or b"{}").get("entries", [])
+        except (ValueError, AttributeError):
+            return []
+        copies = []
+        for item in entries if isinstance(entries, list) else []:
+            when = copy_time(item, version, self.now)
+            if when is None:
+                continue
+            suite = codename + POCKETS[item["pocket"]]
+            base = f"{self.snapshot}/{when.strftime('%Y%m%dT%H%M%SZ')}"
+            if (base, [suite]) not in copies:
+                copies.append((base, [suite]))
+        return copies[:6]
+
+
+def copy_time(item, version: str, now: datetime) -> datetime | None:
+    """When a dated copy should still list this publishing of `version`:
+    just before it was superseded (or now), if that is after it was
+    published and inside the copies' range; None to skip it."""
+    if not isinstance(item, dict) or item.get("binary_package_version") != version:
+        return None
+    if item.get("pocket") not in POCKETS:
+        return None
+    published = _when(item.get("date_published"))
+    if published is None:
+        return None
+    ended = _when(item.get("date_superseded")) or _when(item.get("date_removed")) or now
+    when = min(ended, now) - timedelta(minutes=1)
+    if when <= published or when < SNAPSHOTS_FROM:
+        return None
+    return when.replace(microsecond=0)
+
+
+def _when(text) -> datetime | None:
+    if not isinstance(text, str):
+        return None
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)

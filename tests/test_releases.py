@@ -702,7 +702,7 @@ def test_the_list_holds_everything_the_extras_ask_for():
         wanted += project["optional-dependencies"][extra]
     locked = _pinned(script.LOCK)
     for requirement in wanted:
-        name = re.match(r"[A-Za-z0-9._-]+", requirement).group(0).lower().replace("_", "-")
+        name = re.sub(r"[-_.]+", "-", re.match(r"[A-Za-z0-9._-]+", requirement).group(0).lower())
         assert name in locked, f"{name} isn't in the list: run scripts/release.py lock"
 
 

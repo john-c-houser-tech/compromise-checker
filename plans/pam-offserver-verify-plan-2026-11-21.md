@@ -172,6 +172,16 @@ snapshot, verification against recorded package data, and the checks:
    V.7 works, `package.changed` gets its own issue, decided then from how the PAM version holds up
    in use.
 
+5. **Ubuntu Pro (ESM) packages: OPEN, for later.** Servers attached to Ubuntu Pro also get
+   updates from ESM, Ubuntu's extended support: separate servers (`esm.ubuntu.com`) that need
+   the organization's Pro token, with packages signed by another key. Today such a version is
+   reported "an Ubuntu Pro (ESM) version: can't be checked yet" and stays high (V.2 names it
+   from the `+esm` in the version, without searching). This matters most for **Ubuntu 22.04
+   from April 2027**, when its free updates end and fixes come only through ESM, and for 24.04
+   in 2029. Many organizations, government ones among them, run Pro. Supporting it means a
+   setting for the Pro token on the checker's machine (kept like the advisor's key), the ESM
+   signing keys pinned, and the ESM lists' own `InRelease` chain. To decide before April 2027.
+
 ## Steps (one pull request each)
 
 - **V.1 Prove the chains by hand. DONE 2026-11-21** (results below). On one Ubuntu 24.04 and one Rocky 9 package: `gpgv` on
@@ -271,6 +281,6 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
   fails is skipped and named in the reason.
 - **Downloads:** one deadline for the run, held even while a server is slow to send its headers,
   and redirects only within the same host, never away from HTTPS.
-- **Not covered, all left high:** Ubuntu Pro/ESM versions, AlmaLinux 10's `x86_64_v2` builds, and
+- **Not covered, all left high:** Ubuntu Pro/ESM versions (decision 5), AlmaLinux 10's `x86_64_v2` builds, and
   arm64. If Ubuntu ever signs with a second, new key, every Ubuntu check fails until that key is
   pinned.

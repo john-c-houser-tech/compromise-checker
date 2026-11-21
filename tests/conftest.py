@@ -288,3 +288,22 @@ def home(tmp_path, monkeypatch):
     store = Store(database_file(tmp_path))
     yield tmp_path, store, load_identity(identity_path), config
     store.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_package_downloads(monkeypatch):
+    """No test fetches from the distributions' real mirrors (checker.verify): verification is
+    on by default, so a run or an analysis with a changed PAM module would. Only this machine
+    is allowed (the fetcher's own tests serve files from 127.0.0.1)."""
+    import urllib.parse
+
+    from checker.verify import fetch
+
+    real = fetch.HttpFetcher._get
+
+    def local_only(self, url, limit, first):
+        if urllib.parse.urlsplit(url).hostname not in ("127.0.0.1", "localhost"):
+            raise fetch.FetchError(f"no downloads in tests: {url[:200]}")
+        return real(self, url, limit, first)
+
+    monkeypatch.setattr(fetch.HttpFetcher, "_get", local_only)

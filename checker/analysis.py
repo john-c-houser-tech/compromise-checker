@@ -207,3 +207,30 @@ def snapshot_of(
         store_parsed(store, row, recipients, parsed)
         snapshot = parsed.snapshot
     return snapshot
+
+
+def load_official(store: Store, row: Any, identity: x25519.Identity) -> dict[str, Any] | None:
+    """The stored results of checking changed PAM modules against the
+    distribution's packages (checker.official), if any."""
+    from checker.official import OFFICIAL_VERSION
+
+    try:
+        found = _load_derived(store, row, identity, "official", OFFICIAL_VERSION)
+    except EvidenceError:
+        return None  # damaged: these results can be made again, so they're treated as missing
+    return json.loads(found[0]) if found else None
+
+
+def store_official(store: Store, row: Any, recipients: list[str], results: dict[str, Any]) -> None:
+    from checker.official import OFFICIAL_VERSION, summary
+
+    _store_derived(
+        store,
+        row,
+        recipients,
+        "official",
+        OFFICIAL_VERSION,
+        json.dumps(results).encode(),
+        len(results.get("files") or {}),
+        summary(results),
+    )

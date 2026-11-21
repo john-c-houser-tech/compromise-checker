@@ -24,10 +24,10 @@ from checker.protocol import Error, Manifest, Record, SourceEnd, SourceStart, Tr
 
 # 12: PHP settings, package history; 13: sites' .user.ini, .htaccess; 14: nft blocks read
 # whole, fail2ban's banned addresses; 15: nft's JSON beside its text
-SNAPSHOT_VERSION = 16
+SNAPSHOT_VERSION = 17
 # 5: network; 6: logging, history flags; 7: software; 8: mail; 9: web; 10: containers;
 # 11: the folders web servers serve; 16: a /run file's content no longer brings back its
-# inode and times
+# inode and times; 17: PAM modules' owners (#189)
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -1274,6 +1274,19 @@ class SnapshotBuilder:
             self.section("unowned_executables").items[data["path"]] = _meta(data)
         elif name == "system_files_summary":
             self.live["system_files_summary"] = data
+        elif name == "pam_module_owner" and isinstance(data.get("path"), str):
+            # Who the server says owns each PAM module (#189): only used to find the
+            # distribution's package, so kept in live and never compared. An older
+            # collector sends no summary, and then the owners count as unknown.
+            owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
+            if isinstance(data.get("package"), str):
+                owners["owners"][data["path"]] = {
+                    "package": data["package"],
+                    "arch": data.get("arch") if isinstance(data.get("arch"), str) else None,
+                }
+        elif name == "pam_owners_summary":
+            owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
+            owners["complete"] = data.get("complete") is True
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 

@@ -3413,6 +3413,98 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(len(records_named(records, "privileged_file")), 2)  # still reported
         self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
 
+    def test_pam_module_owners_with_their_architecture(self):
+        # #189: the owner of each PAM module file, so the controller can fetch its package.
+        self.fixture()
+        os.symlink("usr/lib", Path(self.root, "lib"))
+        unix = "/lib/x86_64-linux-gnu/security/pam_unix.so"
+        self.write(
+            "var/lib/dpkg/info/libpam-modules:amd64.list",
+            f"/lib/x86_64-linux-gnu/security\n{unix}\n".encode(),
+        )
+        self.write("var/lib/dpkg/info/libpam-runtime.list", b"/usr/lib/security/pam_extra.so\n")
+        records = self.run_with(caps={})
+        owners = {r["path"]: r for r in records_named(records, "pam_module_owner")}
+        self.assertEqual(
+            owners,
+            {
+                "/usr/lib/security/pam_extra.so": {
+                    "path": "/usr/lib/security/pam_extra.so",
+                    "package": "libpam-runtime",
+                },
+                "/usr/lib/x86_64-linux-gnu/security/pam_unix.so": {
+                    "path": "/usr/lib/x86_64-linux-gnu/security/pam_unix.so",
+                    "package": "libpam-modules",
+                    "arch": "amd64",
+                },
+            },
+        )  # merged /usr: under the walk's path; nothing outside PAM's directories
+        self.assertEqual(
+            records_named(records, "pam_owners_summary"), [{"complete": True, "count": 2}]
+        )
+
+    def test_a_diverted_pam_module_is_owned_by_the_diverter_without_an_architecture(self):
+        self.fixture()
+        unix = "/usr/lib/x86_64-linux-gnu/security/pam_unix.so"
+        self.write("var/lib/dpkg/info/libpam-modules:amd64.list", f"{unix}\n".encode())
+        self.write("var/lib/dpkg/info/vim.list", f"{unix}\n".encode())
+        self.write("var/lib/dpkg/diversions", f"{unix}\n{unix}.real\nvim\n".encode())
+        records = self.run_with(caps={})
+        owners = {r["path"]: r for r in records_named(records, "pam_module_owner")}
+        self.assertEqual(owners[unix], {"path": unix, "package": "vim"})
+        self.assertEqual(owners[unix + ".real"]["package"], "libpam-modules")
+        self.assertEqual(owners[unix + ".real"]["arch"], "amd64")
+
+    def test_pam_owners_unknown_without_a_package_manager_or_past_the_limit(self):
+        self.fixture()
+        self.write(
+            "var/lib/dpkg/info/libpam-modules.list",
+            b"/usr/lib/security/pam_a.so\n/usr/lib/security/pam_b.so\n",
+        )
+        records = self.run_with(caps={}, MAX_PAM_OWNERS=1)
+        self.assertEqual(
+            records_named(records, "pam_owners_summary"), [{"complete": False, "count": 1}]
+        )
+        os.remove(Path(self.root, "var/lib/dpkg/status"))
+        records = self.run_with(caps={})
+        self.assertEqual(records_named(records, "pam_module_owner"), [])
+        self.assertEqual(
+            records_named(records, "pam_owners_summary"), [{"complete": False, "count": 0}]
+        )
+
+    def test_rpm_pam_module_owners_carry_the_package_architecture(self):
+        self.fixture()
+        os.remove(Path(self.root, "var/lib/dpkg/status"))
+        import sqlite3
+
+        Path(self.root, "var/lib/rpm").mkdir(parents=True)
+        connection = sqlite3.connect(Path(self.root, "var/lib/rpm/rpmdb.sqlite"))
+        connection.execute("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY, blob BLOB)")
+        for name, arch in (("pam", "x86_64"), ("sssd-client", "x86_64")):
+            blob = rpm_header(
+                [
+                    (1000, 6, name),
+                    (1022, 6, arch),
+                    (1029, 2, [0]),
+                    (1116, 4, [0]),
+                    (1117, 8, [f"pam_{name}.so"]),
+                    (1118, 8, ["/usr/lib64/security/"]),
+                ]
+            )
+            connection.execute("INSERT INTO Packages (blob) VALUES (?)", (blob,))
+        connection.commit()
+        connection.close()
+        records = self.run_with(caps={})
+        owners = {r["path"]: r for r in records_named(records, "pam_module_owner")}
+        self.assertEqual(
+            owners["/usr/lib64/security/pam_pam.so"],
+            {"path": "/usr/lib64/security/pam_pam.so", "package": "pam", "arch": "x86_64"},
+        )
+        self.assertEqual(owners["/usr/lib64/security/pam_sssd-client.so"]["package"], "sssd-client")
+        self.assertEqual(
+            records_named(records, "pam_owners_summary"), [{"complete": True, "count": 2}]
+        )
+
     def test_unowned_shared_library_without_execute_bit(self):
         self.fixture()
         self.write("usr/lib/x86_64-linux-gnu/libprocesshider.so", b"\x7fELF hide").chmod(0o644)

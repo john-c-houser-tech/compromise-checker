@@ -1611,3 +1611,29 @@ def test_a_chain_only_the_text_has_is_found_with_nothing_else_odd_about_it():
     _firewall_sources(builder, text, nft_objects(*_REAL[:2]))
     assert builder.live["nft_odd_comments"] == 1
     assert "nft: [ip nat / chain DOCKER] return" in builder.section("firewall_rules").items
+
+
+def test_pam_modules_owners_are_kept_apart_and_known_only_when_the_collector_says(tmp_path):
+    """#189: owners are the server's claims, used only to find a package, never compared;
+    an older collector sends none, and a stream without the summary leaves them unknown."""
+    unix = "/usr/lib/x86_64-linux-gnu/security/pam_unix.so"
+    told = [
+        rec("system_files", "pam_module_owner", path=unix, package="libpam-modules", arch="amd64"),
+        rec("system_files", "pam_module_owner", path="/usr/lib/security/x.so", package="x"),
+        rec("system_files", "pam_module_owner", path="/odd", package=["not", "text"]),
+        rec("system_files", "pam_owners_summary", complete=True, count=2),
+    ]
+    snap = snapshot_of_records(host_records(extra=told), tmp_path)
+    assert snap.live["pam_owners"] == {
+        "complete": True,
+        "owners": {
+            unix: {"package": "libpam-modules", "arch": "amd64"},
+            "/usr/lib/security/x.so": {"package": "x", "arch": None},
+        },
+    }
+    assert "pam_owners" not in snap.sections
+    (tmp_path / "cut").mkdir()
+    (tmp_path / "older").mkdir()
+    cut = snapshot_of_records(host_records(extra=told[:1]), tmp_path / "cut")
+    assert cut.live["pam_owners"]["complete"] is False
+    assert "pam_owners" not in snapshot_of_records(host_records(), tmp_path / "older").live

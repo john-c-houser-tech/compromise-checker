@@ -193,11 +193,18 @@ snapshot, verification against recorded package data, and the checks:
   short note in this file. No product code.
 - **V.2 The verifier** (`checker/verify/`): fetch, check signatures, read file hashes, cache.
   Tested offline with packages built and signed by a test key, plus recorded real signed indexes.
-- **V.3 Collector: owner hints.** The owner and architecture of each file in a PAM module
+- **V.3 Collector: owner hints. DONE 2026-11-21** (below). The owner and architecture of each file in a PAM module
   directory (reusing #188's `record_pam_owners`), kept out of the comparison. Collector version
   bump.
 - **V.4 The step and its settings:** run after collection, save `official_files`, the on/off and
   mirror settings, notes in the report and web pages.
+- **Time for the step (V.4, from a side note on #210):** V.2 gives the whole run one deadline
+  (about a minute). A server on the newest version takes 2-5 seconds; one an update behind,
+  needing a dated copy, took 15-18 seconds live. Several servers behind on different versions
+  in one run would use the minute up and stay high ("out of time"). V.4 settles it: a share of
+  time per server as well as a cap for the run, signed lists kept on disk for a few hours (as
+  "Caching" above says; V.2 keeps them only for the run), and the verified results already
+  cached by version, so a version is fetched once for the whole fleet.
 - **V.5 The check:** `pam.changes` uses the results. The tests are the ten attacks above, end to
   end, plus the ones below.
 - **Held to the baseline (V.4/V.5, from the #210 security review).** Every field the verifier
@@ -266,6 +273,15 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
 - **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
   Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
 - **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.
+
+## V.3 as built (2026-11-21)
+
+- The collector sends `pam_module_owner` (path under the walk's merged-`/usr` form, package, and
+  architecture when dpkg's `<name>:<arch>.list` or rpm's header names it) and always a
+  `pam_owners_summary`. A diverted module is owned by the diverting package, with no
+  architecture. The snapshot keeps them in `live["pam_owners"]`, never compared (snapshot
+  version 17). The version comes from the package list (`packages`, keyed by name and
+  architecture), so the collector sends no versions of its own.
 
 ## V.2 as built (PR #210, 2026-11-21)
 

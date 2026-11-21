@@ -70,6 +70,11 @@ that one known alias (the collector already reports it, `merged_dirs`), never an
 3. The header's name, version, release and architecture must equal the server's claim, and the
    module's path must appear in it with the matching digest.
 
+**Older versions** (V.1): the main repositories list only the newest pam. Each vault keeps a
+repository for every minor release (Rocky 9.0–9.8, Alma 9.0–9.9 and 10.0–10.3), with every pam
+version released in it, signed with the same key. A release such as `el9_8.1` names its minor
+(9.8). A plain `el9` doesn't, so the checker tries the minors from the newest down.
+
 ### Red Hat Enterprise Linux itself
 
 Red Hat's packages need a subscription to download, so the checker can't fetch them by default.
@@ -130,8 +135,8 @@ snapshot, verification against recorded package data, and the checks:
 
 - **Hosts the checker machine needs to reach:** `archive.ubuntu.com`, `security.ubuntu.com` and
   `ports.ubuntu.com` (arm64), `snapshot.ubuntu.com` and `api.launchpad.net` (older versions);
-  `dl.rockylinux.org` and `repo.almalinux.org`, plus their vault hosts
-  if old versions live there (step V.1 finds out). One setting replaces them with the
+  `dl.rockylinux.org` (its `/vault/` too) and `repo.almalinux.org` plus `vault.almalinux.org`
+  (older versions, V.1). One setting replaces them with the
   organization's own mirror.
 - **Without network access** everything stays high, with the note saying so. Nothing fails.
 - **What leaves the machine:** requests for public package files by name and version. No server
@@ -143,9 +148,11 @@ snapshot, verification against recorded package data, and the checks:
   cached. Signed indexes are kept for a few hours.
 - **Limits:** a size cap per download, a time cap for the whole step (about a minute), and HTTPS
   where the host offers it (the signatures carry the trust either way).
-- **No new Python dependency** if V.1 confirms it: `gpgv` is already on Ubuntu and Rocky (apt and
-  dnf rely on it). Reading Ubuntu's `.deb` data needs zstd, which Python 3.12 lacks. The options
-  are the `zstandard` package or the system `zstd` program, decided in V.1.
+- **One new Python dependency, for Ubuntu's packages only** (V.1): Ubuntu's `.deb` data is zstd,
+  and the checker machine runs Python 3.12 on Ubuntu 24.04 and Rocky 9 and 10, which can't read
+  it. Python 3.14 can (`compression.zstd`). So: `backports.zstd; python_version < "3.14"`, the
+  same interface, dropped once every checker machine has 3.14. `gpgv` comes with apt on Ubuntu.
+  On Rocky the installer adds `gnupg2` to be sure, checked in V.6's install proof.
 
 ## Open decisions
 
@@ -167,7 +174,7 @@ snapshot, verification against recorded package data, and the checks:
 
 ## Steps (one pull request each)
 
-- **V.1 Prove the chains by hand.** On one Ubuntu 24.04 and one Rocky 9 package: `gpgv` on
+- **V.1 Prove the chains by hand. DONE 2026-11-21** (results below). On one Ubuntu 24.04 and one Rocky 9 package: `gpgv` on
   `InRelease`, `gpgv` on an rpm's header signature, a range request for the header, zstd, and
   where older versions live **on both systems**. For Ubuntu that means a `libpam-modules` version
   that has dropped off `-updates`: whether a dated copy has it, which key signs that copy's
@@ -193,3 +200,49 @@ snapshot, verification against recorded package data, and the checks:
 
 Each PR gets two independent agent reviews, and V.2 and V.5 also get a security review, before
 John merges. V.2–V.5 can't help anyone until all of them are in, so they ride to main together.
+
+## V.1 results (2026-11-21, by hand from the laptop, no product code)
+
+Spike scripts walked each chain against the real servers, for `libpam-modules` (Ubuntu) and `pam`
+(Rocky, Alma), reading `pam_unix.so` and `pam_permit.so`.
+
+**Ubuntu: works.**
+- `InRelease` for 22.04, 24.04 and 26.04 (release, `-updates`, `-security`) all verify with `gpgv`
+  against one key: *Ubuntu Archive Automatic Signing Key (2018)*, `F6EC B376 2474 EDA9 D21B 7022
+  8719 20D1 991B C93C`.
+- `InRelease` → `Packages.xz` → `.deb` → the module's SHA-256: every hash matched, read in memory.
+- Paths: 22.04 ships modules in `/lib/x86_64-linux-gnu/security/`, 24.04 in `/usr/lib/...`. The
+  merged-`/usr` alias is needed.
+- **Older versions:** `-updates` lists only `1.5.3-5ubuntu5.7`. Launchpad's publishing history
+  (`getPublishedBinaries`, no sign-in) lists every version with when it was published and
+  superseded. The dated copy from inside that window (`snapshot.ubuntu.com/ubuntu/20260801T000000Z/`
+  for 5ubuntu5.6, `20240701T000000Z` for 5ubuntu5.1) has a signed `InRelease` with the same key,
+  and the whole chain passed. Copies start in early 2023: a 2023-03-01 copy exists, a 2023-01-01
+  one is 404. Only the Release, Updates and Security pockets count. Launchpad also lists Proposed
+  and Deleted entries.
+- Ubuntu's `InRelease` has no `Valid-Until`, so an old list can be replayed. That can only offer
+  older real packages, which decision 2 already makes medium.
+
+**Rocky Linux and AlmaLinux, 9 and 10: works, two ways.**
+- `repomd.xml.asc` exists and verifies for all four (Rocky 9 `21CB 256A … 350D 275D`, Rocky 10
+  `FC22 6859 … 6FED FC85`, Alma 9 `BF18 AC28 … B86B 3716`, Alma 10 `EE6D B7B9 … C2A1 E572`).
+  `repomd` → `primary` → the rpm's SHA-256 matched in every case.
+- The rpm's own RSA header signature (tag 268) verifies with `gpgv` as a detached signature over
+  the header. A **range request** (HTTP 206, using `primary`'s `header-range`) fetches 72–124 KB
+  instead of the whole 520–580 KB package.
+- `FILEDIGESTS` is SHA-256 (algorithm 8) on all four. For both modules it equals the real file in
+  the package's payload (checked with `bsdtar`).
+- Older versions: see "Older versions" under Rocky and AlmaLinux above. Vault repositories verify
+  with the same keys.
+
+**Findings for V.2:**
+- **User-Agent:** `archive.ubuntu.com` answers **403** to Python's default User-Agent for package
+  files (lists are fine). Send `compromise-checker/<version>`, nothing that names the user.
+- **Parse only what was signed:** `gpgv --output` gives the signed text of `InRelease`. Parse that,
+  never the file as downloaded. Require `VALIDSIG` with the pinned fingerprint, with `GNUPGHOME`
+  set to an empty private folder, so no other keyring counts.
+- **Decompression caps:** use the streaming decompressor with a maximum output size, never
+  one-shot `decompress()`.
+- **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
+  Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
+- **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.

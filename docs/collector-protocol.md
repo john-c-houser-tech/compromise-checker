@@ -103,10 +103,13 @@ always be sent and two different names are never written the same:
 - any other lone surrogate (from JSON a server wrote) is written as the
   bytes of its own UTF-8 form, by the first rule.
 
-Reading back: before `xHH` (`80` to `ff`), an odd run of backslashes ends in
-that byte and an even run is literal backslashes (halved) and then the text
-`xHH`. Every other backslash is itself. So ordinary names, systemd's `\x2d`
-among them, are sent exactly as they are. (Without the second rule, a file
+Reading back: before `xHH` (lowercase, `80` to `ff`), a run of n backslashes
+is n/2 literal backslashes and then the text `xHH` when n is even, and
+(n-1)/2 literal backslashes and then that byte when n is odd. Every other
+backslash is itself. So names without such a byte or such a literal escape,
+systemd's `\x2d` and its other escapes below `80` among them, are sent
+exactly as they are; systemd's escapes of non-ASCII bytes (`caf\xc3\xa9`)
+arrive with their backslashes doubled. (Without the second rule, a file
 literally named `pam_\xff.so` would pass for one named with the byte 0xff,
 and one could hide the other.)
 

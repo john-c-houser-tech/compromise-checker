@@ -2109,6 +2109,15 @@ class PrintableTests(FixtureRoot):
                 self.assertNotIn(text, seen, (name, seen.get(text)))
                 seen[text] = name
 
+    def test_a_long_run_of_backslashes_takes_no_time(self):
+        # One process argument could otherwise stall the processes module (quadratic regex).
+        import time
+
+        collector = load_collector(self.root)
+        started = time.monotonic()
+        collector._printable("\\x8f" + "\\" * 1_000_000 + "y")
+        self.assertLess(time.monotonic() - started, 1.0)
+
     def test_ordinary_and_systemd_names_are_unchanged(self):
         collector = load_collector(self.root)
         for name in ("/etc/x", "dev-disk-by\\x2duuid-1.swap", "a\\b", "caf\u00e9", "\\x8"):
@@ -3510,6 +3519,18 @@ class SystemFilesTests(FixtureRoot):
         self.assertIn("Error", summary["owners_problem"])
         self.assertEqual(len(records_named(records, "privileged_file")), 2)  # still reported
         self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
+
+    def test_a_packaged_file_named_with_a_byte_that_isnt_utf8_is_owned(self):
+        self.fixture()
+        with open(Path(self.root, "var/lib/dpkg/info/coreutils.list"), "ab") as listing:
+            listing.write(b"/usr/bin/caf\xe9\n")
+        with open(os.path.join(os.fsencode(self.root), b"usr/bin/caf\xe9"), "wb") as handle:
+            handle.write(b"\x7fELF packaged")
+        os.chmod(os.path.join(os.fsencode(self.root), b"usr/bin/caf\xe9"), 0o755)  # noqa: S103 - a program, as packaged
+        records = self.run_with(caps={})
+        unowned = {r["path"] for r in records_named(records, "unowned_executable")}
+        self.assertNotIn("/usr/bin/caf\\xe9", unowned)  # the list and the walk agree
+        self.assertIn("/usr/bin/evil", unowned)
 
     def test_unowned_shared_library_without_execute_bit(self):
         self.fixture()
@@ -5947,6 +5968,12 @@ class ContainerTests(FixtureRoot):
         records = collect(self.root, ["containers"])
         self.assertEqual(records[-1]["modules"]["containers"]["status"], "ok")
         self.assertEqual(len(named(records, "container")), 1)
+
+    def test_a_data_root_that_cant_name_a_file_is_ignored(self):
+        self.write("etc/docker/daemon.json", b'{"data-root": "/x\\ud800"}')
+        self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("web"))
+        records = collect(self.root, ["containers"])
+        self.assertEqual(records[-1]["modules"]["containers"]["status"], "ok")
 
     def test_a_missing_hostconfig_is_a_gap_not_unprivileged(self):
         self.write(f"var/lib/docker/containers/{DOCKER_ID}/config.v2.json", docker_config("web"))

@@ -1009,9 +1009,11 @@ def list_directory(absolute, limit, run=None):
     return sorted(names), truncated
 
 
-def read_whole_lines(absolute, limit):
+def read_whole_lines(absolute, limit, errors="replace"):
     """Up to `limit` bytes of a text file, cut back to its last whole line if
-    longer. Returns (text, truncated), or (None, False) if unreadable."""
+    longer. Returns (text, truncated), or (None, False) if unreadable. File
+    lists read with errors="surrogateescape" keep a name that isn't UTF-8
+    exactly as the walk sees it."""
     try:
         raw, _ = open_regular_file(absolute)
     except (OSError, ValueError):
@@ -1024,7 +1026,7 @@ def read_whole_lines(absolute, limit):
     truncated = len(data) > limit
     if truncated:
         data = data[: data.rfind(b"\n", 0, limit) + 1]
-    return data.decode("utf-8", errors="replace"), truncated
+    return data.decode("utf-8", errors=errors), truncated
 
 
 def hash_file(run, absolute, expect=None):
@@ -4565,7 +4567,7 @@ def verify_dpkg(run, module):
         text, list_cut = (
             (None, False)
             if store_refusal(run, absolute)
-            else read_whole_lines(absolute, 16 * 1024 * 1024)
+            else read_whole_lines(absolute, 16 * 1024 * 1024, "surrogateescape")
         )
         if text is None:
             unreadable_lists.append(name)  # its files go unchecked: a gap, said so
@@ -5252,7 +5254,7 @@ def _dpkg_list_paths(run, package_list):
     text, truncated = (
         (None, False)
         if store_refusal(run, package_list)
-        else read_whole_lines(package_list, 16 * 1024 * 1024)
+        else read_whole_lines(package_list, 16 * 1024 * 1024, "surrogateescape")
     )
     return [line for line in (text or "").splitlines() if line.startswith("/")], (
         text is not None and not truncated
@@ -6696,6 +6698,15 @@ def _read_int(absolute):
         return None
 
 
+def _encodable_path(text):
+    """Whether `text` can name a file here (a lone surrogate from JSON can't)."""
+    try:
+        text.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _escaped(value):
     """`value` with every text in it (dict keys too) made sendable by
     _printable; anything else as it is."""
@@ -6714,7 +6725,9 @@ def _escaped(value):
 # back: an odd run of backslashes before xHH ends in a byte, an even one doesn't.
 _RAW_BYTE = re.compile("[\udc80-\udcff]")
 _OTHER_SURROGATE = re.compile("[\ud800-\udc7f\udd00-\udfff]")
-_AMBIGUOUS = re.compile("(\\\\+)(?=x[89a-f][0-9a-f]|[\udc80-\udcff])")
+# (?<!\\) starts a run only at its first backslash: without it, a long run that
+# isn't followed by an escape is tried from every place in it (quadratic time).
+_AMBIGUOUS = re.compile("(?<!\\\\)(\\\\+)(?=x[89a-f][0-9a-f]|[\udc80-\udcff])")
 _NEEDS_PRINTING = re.compile("[\ud800-\udfff]|\\\\x[89a-f][0-9a-f]")
 
 
@@ -8942,7 +8955,12 @@ def _docker_roots():
     settings, _ = read_json(DOCKER_DAEMON_JSON, 1024 * 1024)
     if isinstance(settings, dict):
         chosen = settings.get("data-root") or settings.get("graph")
-        if isinstance(chosen, str) and chosen.startswith("/") and ".." not in chosen.split("/"):
+        if (
+            isinstance(chosen, str)
+            and chosen.startswith("/")
+            and ".." not in chosen.split("/")
+            and _encodable_path(chosen)
+        ):
             roots = [chosen.rstrip("/") or "/"]
     found = []
     for root in roots:

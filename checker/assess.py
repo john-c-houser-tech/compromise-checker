@@ -274,7 +274,7 @@ def official_results(
     # again whenever a verifier is at hand.
     if stored_is_current(stored, baseline_id, retrying=verifier is not None):
         return stored
-    if verifier is None or not official_targets(snapshot, since_baseline):
+    if verifier is None or not official_targets(snapshot, since_baseline, every=True):
         return None
     previous_results = None
     if previous_id and previous_id != baseline_id:

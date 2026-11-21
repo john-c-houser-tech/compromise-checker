@@ -1,4 +1,4 @@
-"""Changed PAM modules checked against the distribution's own packages (#189, V.4).
+"""PAM modules checked against the distribution's own packages (#189, V.4 and V.7).
 
 The step between a collection and its checks: for each file in a PAM
 module directory that changed or appeared since the baseline, find the
@@ -28,7 +28,7 @@ from checker.verify import Lookup, Verifier, package_paths
 from checker.verify import compare as compare_file
 from checker.verify.words import show
 
-OFFICIAL_VERSION = 2  # 2: links checked by their target
+OFFICIAL_VERSION = 3  # 2: links checked by their target; 3: every module, not only changed
 CHANGED_FIELDS = {"sha256", "content_sha256", "size", "inode", "link_target"}
 SYSTEMS = {"ubuntu": "dpkg", "rocky": "rpm", "almalinux": "rpm", "rhel": "rpm"}
 # The PAM module directories the collector walks (PAM_MODULE_DIRS), one or two
@@ -44,15 +44,29 @@ class Target:
     link_target: str | None = None  # a link's target (pam_unix_acct.so -> pam_unix.so)
 
 
-def targets(snapshot: Snapshot, since_baseline: dict[str, Any] | None) -> list[Target]:
+def targets(
+    snapshot: Snapshot, since_baseline: dict[str, Any] | None, every: bool = False
+) -> list[Target]:
     """The PAM module files to check: added, or changed in content, since
-    the baseline: regular files by their hash, links by their target (a
-    package's update re-creates its links); directories aren't checked."""
-    if since_baseline is None:
-        return []
-    diff = since_baseline.get("pam") or {}
+    the baseline; with `every`, all the others too ("unchanged": a module
+    swapped before the baseline was taken shows only this way). Regular
+    files by their hash, links by their target (a package's update
+    re-creates its links); directories aren't checked."""
     items = _items(snapshot, "pam")
     found = []
+    if every:
+        changed = set()
+        if since_baseline is not None:
+            diff = since_baseline.get("pam") or {}
+            changed = set(diff.get("added") or {}) | set(diff.get("changed") or {})
+        for path in items:
+            if path not in changed and MODULE_PATH.fullmatch(path):
+                target = _target(path, "unchanged", items)
+                if target is not None:
+                    found.append(target)
+    if since_baseline is None:
+        return sorted(found, key=lambda t: t.path)
+    diff = since_baseline.get("pam") or {}
     for how, entries in (
         ("added", diff.get("added") or {}),
         ("changed", diff.get("changed") or {}),
@@ -61,14 +75,25 @@ def targets(snapshot: Snapshot, since_baseline: dict[str, Any] | None) -> list[T
             if not MODULE_PATH.fullmatch(path):
                 continue
             if how == "changed" and not CHANGED_FIELDS & set(fields or {}):
+                if every:  # changed in mode or times only: checked as unchanged
+                    target = _target(path, "unchanged", items)
+                    if target is not None:
+                        found.append(target)
                 continue
-            item = items.get(path) or {}
-            sha256, link = item.get("sha256"), item.get("link_target")
-            if isinstance(sha256, str) and len(sha256) == 64:
-                found.append(Target(path, how, sha256))
-            elif item.get("type") == "l" and isinstance(link, str) and link:
-                found.append(Target(path, how, None, link))
+            target = _target(path, how, items)
+            if target is not None:
+                found.append(target)
     return sorted(found, key=lambda t: t.path)
+
+
+def _target(path: str, how: str, items: dict) -> Target | None:
+    item = items.get(path) or {}
+    sha256, link = item.get("sha256"), item.get("link_target")
+    if isinstance(sha256, str) and len(sha256) == 64:
+        return Target(path, how, sha256)
+    if item.get("type") == "l" and isinstance(link, str) and link:
+        return Target(path, how, None, link)
+    return None
 
 
 def verify_pam(
@@ -94,7 +119,7 @@ def verify_pam(
             asked[lookup] = verifier.package(lookup)
         return asked[lookup]
 
-    for target in targets(snapshot, since_baseline):
+    for target in targets(snapshot, since_baseline, every=True):
         try:
             files[target.path] = _check(target, snapshot, baseline, package, seen, previous)
         except Exception as exc:  # noqa: BLE001 - nothing the server sends may stop the step
@@ -131,7 +156,11 @@ def _check(
         return dict(base, outcome="not_checked", reason=reason)
 
     if baseline is None:
-        return not_checked("there is no baseline to hold the lookup to")
+        if target.how != "unchanged":
+            return not_checked("there is no baseline to hold the lookup to")
+        # The first collection (or the baseline itself): held to itself. A
+        # module that isn't its package's is so whatever the baseline says.
+        baseline = snapshot
     system = _os(snapshot)
     if system is None:
         return not_checked("the collection doesn't say which system the server runs")
@@ -349,11 +378,17 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
     counts: dict[str, int] = {}
     reasons: dict[str, int] = {}
     owner_unknown = transient = 0
+    unchanged: dict[str, int] = {}
     for result in ((stored or {}).get("files") or {}).values():
         outcome = result.get("outcome", "not_checked")
+        transient += bool(result.get("transient"))
+        if result.get("how") == "unchanged":
+            # Every module is checked (V.7); the counts and reasons stay the
+            # changed ones', and the unchanged are counted apart.
+            unchanged[outcome] = unchanged.get(outcome, 0) + 1
+            continue
         counts[outcome] = counts.get(outcome, 0) + 1
         owner_unknown += bool(result.get("baseline_owner_unknown"))
-        transient += bool(result.get("transient"))
         if outcome == "not_checked":
             reason = str(result.get("reason") or "")[:200]
             reasons[reason] = reasons.get(reason, 0) + 1
@@ -362,6 +397,7 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
         "not_checked": reasons,
         "baseline_owner_unknown": owner_unknown,
         "transient": transient,
+        "unchanged": unchanged,
     }
 
 
@@ -370,7 +406,9 @@ def unreachable(assessment: dict[str, Any] | None) -> bool:
     reach: something failed on this machine's side and nothing was checked.
     A run then stops asking for its other hosts (they are checked next run)."""
     found = (assessment or {}).get("official_files") or {}
-    counts = found.get("counts") or {}
+    counts = {**(found.get("unchanged") or {})}
+    for outcome, n in (found.get("counts") or {}).items():
+        counts[outcome] = counts.get(outcome, 0) + n
     checked = sum(n for outcome, n in counts.items() if outcome != "not_checked")
     return bool(found.get("transient")) and not checked
 

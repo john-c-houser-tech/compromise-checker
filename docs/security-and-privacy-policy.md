@@ -35,10 +35,10 @@ collects.**
   sent with your own account to the AI provider you choose, or you keep the
   tool's index on a database server outside it (section 10).
 - By default the tool's machine downloads public files: the list of this
-  tool's releases, and, when a PAM module on a server has changed, the
-  distribution's own package for it, to check the change. Those requests name
-  a public file and its version, and carry no server's name, finding or
-  evidence; each can be turned off (section 10).
+  tool's releases, and the distribution's own packages for the PAM modules on
+  your servers, to check them. Those requests name a public file and its
+  version, and carry no server's name, finding or evidence; each can be turned
+  off (section 10).
 - No telemetry. The tool never contacts NouriLoop LLC.
 
 ## 3. Authorization and accountability
@@ -425,10 +425,12 @@ version, are on until you turn them off):
   type `auto` as the web address in Linode's form, the name is made at sslip.io, a public service that turns
   an address into a name, so the machine's address appears in public certificate logs and the name depends on
   that service.
-- requests for the distribution's own packages, when a file in a PAM module directory on a server has changed
-  or appeared since its baseline (on by default; `verify.enabled` turns it off). The tool's machine downloads
-  the package the server says owns the file, for the version the server says is installed, checks its signature
-  with keys built into the tool, and compares the file, so that a routine update isn't reported as a break-in.
+- requests for the distribution's own packages, for the PAM modules on your servers (on by default;
+  `verify.enabled` turns it off). For each module, the tool's machine downloads the package the server says
+  owns it, for the version the server says is installed, checks its signature with keys built into the tool,
+  and compares the file: so that a routine update isn't reported as a break-in, and so that a module swapped
+  before the first check shows. A package version is downloaded once, the first time any server has it, so
+  after the first check of a fleet a request goes out only when a server has a version not seen before.
   The requests go to Ubuntu's archive, and to Rocky Linux's and AlmaLinux's current repositories, or to mirrors
   you name for those (`verify.ubuntu_archive`, `verify.rocky`, `verify.almalinux`). For a version no longer in
   the current lists they also go to Ubuntu's dated copies (snapshot.ubuntu.com), with a question to Launchpad

@@ -230,7 +230,7 @@ snapshot, verification against recorded package data, and the checks:
   outbound hosts, and a scoring calibration rerun. Then a Linode proof on Ubuntu 24.04 and Rocky 9
   (a real PAM update should read low, a swapped module high). Cents, with one OK from John.
 
-- **V.7 Every module, not only the changed ones** (decision 3): check all PAM modules at the
+- **V.7 Every module, not only the changed ones** (decision 3), **DONE 2026-11-21** (below): check all PAM modules at the
   first collection and now and again after, so a module swapped before the baseline shows as
   "differs from the package". Starts after V.6's proof passes.
 
@@ -282,6 +282,24 @@ Spike scripts walked each chain against the real servers, for `libpam-modules` (
 - **Keys:** ship five keys (one Ubuntu key serves all three releases, plus one each for
   Rocky 9 and 10 and Alma 9 and 10) in `checker/verify/keys/`, fingerprints checked against two sources when added.
 - **Untested:** arm64 (`ports.ubuntu.com`, `aarch64` repositories) and Red Hat itself.
+
+## V.7 as built (2026-11-21)
+
+- Every PAM module is checked, not only those added or changed since the baseline: the others are
+  results with `how: "unchanged"`, held to the baseline by the same rules (an owner that isn't the
+  baseline's, and the rest, are "not checked"). At the first collection, or for the baseline
+  itself, a collection is held to itself.
+- An unchanged module, or one at the first collection, that isn't its package's file is a high
+  `differs` ("found at the first check, before any baseline", or "unchanged since the baseline:
+  it was already so when the baseline was taken"), its evidence the item itself. Unchanged
+  modules that match, or that couldn't be checked, make no finding and no note: nothing gets
+  noisier.
+- The summary keeps the changed modules' counts and reasons and counts the unchanged apart
+  (`unchanged`), so notes say only what they said before; the circuit breaker counts both.
+- Cost: one package version is fetched once for the whole fleet (the result cache), so after a
+  fleet's first check a request goes out only for a version no server had before. Results
+  version 3. The policy (sections 2 and 10), the install guide and `config show` now say the
+  downloads are for the PAM modules on the servers, not only changed ones.
 
 ## V.6: the proof on real servers (2026-11-21)
 

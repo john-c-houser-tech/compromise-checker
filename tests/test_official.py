@@ -404,7 +404,7 @@ def test_config_show_says_what_is_downloaded_and_from_where():
 
     def line(**verify):
         config = Config(recipients=["age1x"], verify=Verify(**verify))
-        return next(s for s in describe(config) if s.startswith("Changed PAM modules"))
+        return next(s for s in describe(config) if s.startswith("PAM modules"))
 
     assert "the distributions' own servers" in line() and "snapshot.ubuntu.com" in line()
     assert "your mirrors (https://m.test/u)" in line(ubuntu_archive="https://m.test/u")
@@ -750,3 +750,84 @@ def test_a_harmless_mode_change_with_an_update_is_still_the_update():
     after = dict(AFTER, pam={UNIX: {"sha256": BAD, "size": 2, "mode": "0755", "uid": 0}})
     found = pam_findings(before, after, FakeVerifier({UNIX: {"sha256": BAD}}))
     assert titles(found) == [("low", "PAM modules updated by Ubuntu's own packages")]
+
+
+# === V.7: every module, not only changed ones ================================================
+
+
+OTHER = "/usr/lib/x86_64-linux-gnu/security/pam_permit.so"
+
+
+def test_unchanged_modules_are_checked_and_the_genuine_ones_say_nothing():
+    before = dict(BEFORE, pam={**BEFORE["pam"], OTHER: {"sha256": GOOD}},
+                  owners={**BEFORE["owners"], OTHER: owner()})  # fmt: skip
+    after = dict(AFTER, pam={**AFTER["pam"], OTHER: {"sha256": GOOD}},
+                 owners={**AFTER["owners"], OTHER: owner()})  # fmt: skip
+    verifier = FakeVerifier({UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}})
+    found, results = pam_findings(before, after, verifier, raw=True)
+    assert results["files"][OTHER]["how"] == "unchanged"
+    assert results["files"][OTHER]["outcome"] == "matched"
+    assert titles(found) == [("low", "PAM modules updated by Ubuntu's own packages")]
+    assert len(verifier.asked) == 1  # one package version, however many modules
+    counted = official.summary(results)
+    assert counted["counts"] == {"matched": 1} and counted["unchanged"] == {"matched": 1}
+
+
+def test_a_module_swapped_before_the_baseline_is_high():
+    # pam_permit.so's genuine content is GOOD; the server has had BAD there since before the
+    # baseline, so nothing changed and only the package can show it.
+    trojan = {"sha256": BAD}
+    before = dict(BEFORE, pam={**BEFORE["pam"], OTHER: trojan},
+                  owners={**BEFORE["owners"], OTHER: owner()})  # fmt: skip
+    after = dict(AFTER, pam={**AFTER["pam"], OTHER: trojan},
+                 owners={**AFTER["owners"], OTHER: owner()})  # fmt: skip
+    found = pam_findings(
+        before, after, FakeVerifier({UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}})
+    )
+    swapped = [f for f in found if OTHER in f.summary]
+    assert [(f.band, f.variant) for f in swapped] == [("high", "differs")]
+    assert "unchanged since the baseline" in swapped[0].summary
+    assert swapped[0].evidence == [{"item": ["pam", OTHER]}]
+
+
+def test_the_first_collection_is_checked_against_itself():
+    from checker.checks import Context, run_checks
+
+    current = snap(**dict(BEFORE, pam={UNIX: {"sha256": BAD}}))
+    results = official.verify_pam(current, None, None, FakeVerifier({UNIX: {"sha256": GOOD}}), "b1")
+    assert results["files"][UNIX]["how"] == "unchanged"
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1",
+                      official=results)  # fmt: skip
+    found, _ = run_checks(context)
+    pam = [f for f in found if f.check == "pam.changes"]
+    assert [(f.band, f.variant) for f in pam] == [("high", "differs")]
+    assert "found at the first check, before any baseline" in pam[0].summary
+    genuine = official.verify_pam(current, None, None, FakeVerifier({UNIX: {"sha256": BAD}}), "b1")
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1",
+                      official=genuine)  # fmt: skip
+    assert [f for f in run_checks(context)[0] if f.check == "pam.changes"] == []
+
+
+def test_an_unchanged_module_that_can_t_be_checked_says_nothing():
+    before = dict(BEFORE, pam={**BEFORE["pam"], OTHER: {"sha256": BAD}},
+                  owners={**BEFORE["owners"], OTHER: owner()})  # fmt: skip
+    after = dict(
+        AFTER,
+        pam={**AFTER["pam"], OTHER: {"sha256": BAD}},
+        owners={**AFTER["owners"], OTHER: owner("evil")},
+    )  # an owner swap: not checked
+    found = pam_findings(
+        before, after, FakeVerifier({UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}})
+    )
+    assert not [f for f in found if OTHER in f.summary]
+
+
+def test_analyze_catches_a_swapped_module_at_the_first_collection(home):
+    _, store, identity, config = home
+    add_bundle(home, "b1", 0, pam_records(BAD, "1.5.3-5ubuntu5.6"))
+    first = analyze(store, "web01", identity, config.recipients,
+                    verifier=FakeVerifier({UNIX: {"sha256": GOOD}}))  # fmt: skip
+    pam = [f for f in first["findings"] if f["check"] == "pam.changes"]
+    assert [(f["band"], f["variant"]) for f in pam] == [("high", "differs")]
+    assert first["official_files"]["unchanged"] == {"differs": 1}
+    assert not any("weren't checked" in n or "couldn't be checked" in n for n in first["notes"])

@@ -1006,6 +1006,40 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
     )  # fmt: skip
 
 
+def _unchanged_modules_that_differ(context: Context) -> list[Finding]:
+    """High findings for modules that aren't their package's file although
+    they haven't changed since the baseline, or there is no baseline yet
+    (#189, V.7): swapped before the baseline was taken, so only the
+    distribution's own package can show it."""
+    modules = context.items("pam")
+    distribution = _distribution(context)
+    found = []
+    for path, result in sorted(((context.official or {}).get("files") or {}).items()):
+        if not isinstance(result, dict) or result.get("how") != "unchanged":
+            continue
+        if result.get("outcome") != "differs" or official_result(context, path, modules) is None:
+            continue
+        package = f"{result.get('package')} {result.get('version')}"
+        when = (
+            "found at the first check, before any baseline"
+            if context.since_baseline is None
+            else "unchanged since the baseline: it was already so when the baseline was taken"
+        )
+        found.append(
+            Finding(
+                "pam.changes",
+                f"A PAM module differs from {distribution}'s package for the installed version",
+                COMPROMISE,
+                "high",
+                f"{path}: not the file in {package}; {when}",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+                variant="differs",
+            )  # fmt: skip
+        )
+    return found
+
+
 def _pam_modules_updated(context: Context, explained: list) -> Finding:
     """One low finding for every module the distribution's own packages
     explain: an ordinary update, not one strong sign per file."""
@@ -1108,6 +1142,7 @@ def pam_changes(context: Context) -> list[Finding]:
                     findings.append(finding)
         if explained:
             findings.append(_pam_modules_updated(context, explained))
+    findings += _unchanged_modules_that_differ(context)
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

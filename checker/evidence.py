@@ -339,7 +339,7 @@ class Updates(BaseModel):
 
 
 class Verify(BaseModel):
-    """Changed PAM modules checked against the distribution's own packages,
+    """PAM modules checked against the distribution's own packages,
     fetched by the checker's machine (#189; policy: what leaves the machine is
     requests for public package files). Mirror addresses, if the
     organization has its own: Ubuntu's archive root, and for Rocky Linux and

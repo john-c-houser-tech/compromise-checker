@@ -1,8 +1,9 @@
 # Checking Ubuntu Pro (ESM) packages (2026-11-22)
 
 Issue #217, the last item: decision 5 of the PAM plan (`pam-offserver-verify-plan-2026-11-21.md`).
-Draft 1. The open decisions are at the end of this plan; nothing is built until John has settled
-them and step E.1 has answered what public sources don't.
+Draft 1. **On hold since 2026-11-22**, kept on dev for later. Pick it up well before April 2027.
+The open decisions are at the end of this plan; nothing is built until John has settled them and
+step E.1 has answered what public sources don't.
 
 ## The problem
 

@@ -248,9 +248,13 @@ class Rpm:
         config = self.systems.get(system)
         major = release.split(".")[0]
         if config is None or major not in config["keys"]:
-            raise PackageError(f"{show(system)} {show(release)} isn't covered")
+            uncovered = PackageError(f"{show(system)} {show(release)} isn't covered")
+            uncovered.unlisted = ""  # the whole system: no sign about this package
+            raise uncovered
         if arch not in ARCHES:
-            raise PackageError(f"{show(arch)} isn't covered yet")
+            uncovered = PackageError(f"{show(arch)} isn't covered yet")
+            uncovered.unlisted = "arch"  # honest for the server's own architecture
+            raise uncovered
         for part in (package, evr, arch):
             if not _SAFE.fullmatch(part.replace(":", "")):
                 raise PackageError("an odd package name or version")
@@ -273,7 +277,15 @@ class Rpm:
                         raise PackageError(f"{file}: the header was cut short")
                 files, signer = check_header(data, config["keys"][major], package, evr, arch)
                 return files, url, signer
-        raise PackageError(f"{package} {evr} isn't in {system}'s repositories")
+        missing = PackageError(f"{package} {evr} isn't in {system}'s repositories")
+        # With the vaults asked too, every version the distribution built is
+        # there: none of them is no such package (an EPEL or vendor one, or a
+        # made-up one); without them, an old version may simply be gone.
+        listed = self._minors.get(config["vault_list"] + major)
+        missing.unlisted = "package" if self.vaults and listed else "version"
+        if self.vaults and listed is None:
+            missing.transient = True  # the vault's listing couldn't be read: asked again
+        raise missing
 
     def _roots(self, config, major, rel):
         """The current repositories, then the vault's minors: the one the
@@ -292,7 +304,9 @@ class Rpm:
     def _vault_minors(self, config, major):
         key = config["vault_list"] + major
         if key not in self._minors:
-            listing = self.fetcher.get(config["vault_list"], MAX_LISTING) or b""
+            listing = self.fetcher.get(config["vault_list"], MAX_LISTING)
+            if listing is None:
+                return []  # not kept: asked again, and the lookup isn't "no such package"
             found = set(re.findall(rf'href="({major}\.\d+)/"', listing.decode("ascii", "replace")))
             self._minors[key] = sorted(found, key=lambda m: int(m.split(".")[1]), reverse=True)
         return self._minors[key]

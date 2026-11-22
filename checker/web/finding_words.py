@@ -311,6 +311,26 @@ BY_VARIANT = {
         "A file in the part of the system that checks passwords hasn't changed, but the server's list of installed software now says a different package owns it, or none, or several. Honest updates rarely do that; someone hiding a tampered file might.",
         "Ask who changed the installed software on this server. If no one can say, get advice before you change anything.",
     ),
+    ("pam.changes", "owners_cut"): (
+        "The server lists more files in the part of the system that checks passwords than any real system has, so not all of them could be checked against the distribution's packages. Filling that list is a way to hide a tampered file.",
+        "Ask who added files there. If no one can say, get advice before you change anything.",
+    ),
+    ("pam.changes", "owners_unread"): (
+        "Some of the server's records of which package installed which file couldn't be read, so files in the part of the system that checks passwords may not all have been checked.",
+        "If this server is slow and it happens every time, nothing to do. Otherwise ask someone to look at its package records; damaged ones are rare.",
+    ),
+    ("pam.changes", "owner_unverified"): (
+        "Files in the part of the system that checks passwords belong, by the server's records, to a package that isn't one of the distribution's signed packages, or isn't properly installed, so they couldn't be checked. Software from another company or an extra repository (a login-security vendor, EPEL) does this honestly, and so does an update left half-finished; so would someone hiding a tampered file.",
+        "If you know the software that installed them, add a whitelist rule for them. If an update was interrupted, finish it. If neither, get advice.",
+    ),
+    ("pam.changes", "version_unverified"): (
+        "Files in the part of the system that checks passwords come from a distribution package whose installed version couldn't be found among the signed packages (an older version than the checker can fetch, an Ubuntu Pro version, or an unusual build), so they weren't checked.",
+        "If the server is behind on updates, update it; the next check can then compare them. Ubuntu Pro (ESM) versions can't be checked yet.",
+    ),
+    ("pam.changes", "packages_unread"): (
+        "The server's list of installed packages couldn't be read whole, so the files in the part of the system that checks passwords couldn't be checked against the distribution's packages.",
+        "If this server is slow, nothing to do. If it is new for this server, ask someone to look at its package records.",
+    ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
         "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",

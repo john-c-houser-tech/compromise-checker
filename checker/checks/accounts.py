@@ -1143,6 +1143,192 @@ def _owner_changes(context: Context, reported: set[str]) -> list[Finding]:
     return found
 
 
+# What the collector says when the owner list is incomplete for reasons honest
+# servers have too (collector.OUT_OF_TIME, collector.NO_PACKAGE_RECORDS).
+HONEST_GAPS = (
+    "the package records couldn't be read in the time allowed",
+    "no dpkg or rpm records were found",
+)
+PACKAGES_CUT = "the package list wasn't collected whole"  # checker.official's reason
+
+
+def _packages_unread(context: Context) -> list[Finding]:
+    """Modules left unchecked because the package list wasn't collected
+    whole (#224): low when the time allowed ran out, else medium (a list
+    padded past its limit would leave every module so)."""
+    files = ((context.official or {}).get("files") or {}).values()
+    count = sum(1 for r in files if isinstance(r, dict) and r.get("reason") == PACKAGES_CUT)
+    if not count:
+        return []
+
+    def gaps_of(snapshot) -> list[str]:
+        section = snapshot.sections.get("packages") if snapshot is not None else None
+        return [str(g) for g in (section.gaps if section is not None else [])]
+
+    gaps = gaps_of(context.snapshot)
+    # Low only for a timeout the baseline had too (root can bring one on).
+    earlier = gaps_of(context.baseline_snapshot)
+    timed_out = (
+        bool(gaps)
+        and all("time" in g for g in gaps)
+        and any("time" in g for g in earlier)
+        and context.baseline_snapshot is not context.snapshot
+    )
+    return [
+        Finding(
+            "pam.changes",
+            "The server's package list wasn't collected whole, so PAM modules weren't checked",
+            COMPROMISE,
+            "low" if timed_out else "medium",
+            f"{count} PAM module file(s) not checked: "
+            + ("; ".join(gaps[:3]) or "no reason given"),
+            [],
+            [],
+            variant="packages_unread",
+        )
+    ]
+
+
+def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
+    """What the server's owner records leave out or can't vouch for:
+    - a list cut at its limit, which no real system reaches (a few hundred
+      PAM module files): high, since the modules past it can't be checked;
+    - a list left incomplete by records that couldn't be read: medium;
+    - a PAM module no package lists, in a complete owner list, or listed only
+      under names dpkg and rpm never make: high, even when the scan for
+      unowned files didn't send it (its own limit can be filled);
+    - an unchanged module whose package isn't installed once, or isn't in
+      the distribution's signed lists (a vendor's package, or a made-up one):
+      medium (`owner_unverified`), high when more packages list it than the
+      collector sends."""
+    from checker.official import MODULE_PATH
+
+    owners = context.snapshot.live.get("pam_owners")
+    if not isinstance(owners, dict):
+        return []
+    distribution = _distribution(context)
+    found = []
+    if owners.get("cut") == "limit":
+        found.append(
+            Finding(
+                "pam.changes",
+                "More PAM module files than any system has: not all their owners were recorded",
+                COMPROMISE,
+                "high",
+                f"{len(owners.get('owners') or {})} owner records sent, the collector's limit",
+                [],
+                [],
+                variant="owners_cut",
+            )  # fmt: skip
+        )
+    elif owners.get("complete") is not True:
+        # (Out of time, a list unreadable, a record dropped: the owner-less
+        # check below can't run, so this is said in its own right. Out of
+        # time, or no package manager at all, happens on honest servers: low.)
+        problems = [str(p) for p in owners.get("problems") or []]
+        # Low only when the baseline had the same gap: root can bring on a
+        # timeout by padding the records, so one that is new stays medium.
+        before = (
+            (context.baseline_snapshot.live.get("pam_owners") or {}).get("problems") or []
+            if context.baseline_snapshot is not None
+            else []
+        )
+        honest = (
+            bool(problems)
+            and all(p in HONEST_GAPS for p in problems)
+            and set(problems) <= {str(p) for p in before}
+        )
+        found.append(
+            Finding(
+                "pam.changes",
+                "The server's package records couldn't all be read",
+                COMPROMISE,
+                "low" if honest else "medium",
+                "; ".join(problems)
+                or "the owner list is incomplete, and the collector didn't say why",
+                [],
+                [],
+                variant="owners_unread",
+            )  # fmt: skip
+        )
+    listed = owners.get("owners") or {}
+    complete = owners.get("complete") is True
+    unowned = context.items("unowned_executables")
+    for path, item in sorted(context.items("pam").items()):
+        if path in unowned or not path.endswith(".so"):
+            continue
+        # Regular files: the scan for unowned files looks at those only, so a
+        # link (an agent's installer may make one) isn't reported this way.
+        if not MODULE_PATH.fullmatch(path) or not item.get("sha256") or item.get("type") == "l":
+            continue
+        record = listed.get(path)
+        if isinstance(record, dict) and record.get("odd"):
+            why = "its package records name it only with names dpkg and rpm never make"
+        elif record is None and complete:
+            why = "no package lists it"
+        else:
+            continue
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM module that no package installed",
+                COMPROMISE,
+                "high",
+                f"{path}: {why}",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+            )  # fmt: skip
+        )
+    modules = context.items("pam")
+    groups: dict[tuple, list[str]] = {}
+    for path, result in sorted(((context.official or {}).get("files") or {}).items()):
+        if (
+            not isinstance(result, dict)
+            or result.get("how") != "unchanged"
+            or path in reported
+            or result.get("unverified") not in ("package", "version")
+            or _held(result)
+            or result.get("outcome") != "not_checked"
+            or official_result(context, path, modules) is None
+        ):
+            continue
+        key = (
+            result["unverified"],
+            str(result.get("package") or "several packages"),
+            str(result.get("version") or ""),
+            str(result.get("reason") or "not checked"),
+            result.get("claims_cut") is True,
+        )
+        groups.setdefault(key, []).append(path)
+    # One finding per package: one package ships many modules.
+    for (kind, package, version, why, cut), paths in sorted(groups.items()):
+        if cut:
+            why += "; more packages list it than the collector sends"
+        shown = ", ".join(paths[:5]) + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
+        if kind == "package":
+            title = (
+                f"PAM modules whose package isn't one of {distribution}'s signed packages,"
+                " or isn't installed"
+            )
+            band, variant = ("high" if cut else "medium"), "owner_unverified"
+        else:
+            title = f"PAM modules from {_a(distribution)} package version that couldn't be checked"
+            band, variant = "low", "version_unverified"
+        found.append(
+            Finding(
+                "pam.changes",
+                title,
+                COMPROMISE,
+                band,
+                f"{package} {version}".strip() + f": {why}: {len(paths)} file(s): {shown}",
+                [f"path:{p}" for p in paths],
+                [{"item": ["pam", p]} for p in paths],
+                variant=variant,
+            )  # fmt: skip
+        )
+    return found
+
+
 def _pam_modules_updated(context: Context, explained: list) -> Finding:
     """One low finding for every module the distribution's own packages
     explain: an ordinary update, not one strong sign per file."""
@@ -1178,6 +1364,11 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "version_unknown",
         "differs",
         "owner_changed",
+        "owners_cut",
+        "owners_unread",
+        "owner_unverified",
+        "version_unverified",
+        "packages_unread",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1250,6 +1441,8 @@ def pam_changes(context: Context) -> list[Finding]:
             findings.append(_pam_modules_updated(context, explained))
     findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
     findings += _owner_changes(context, reported if diff is not None else set())
+    findings += _pam_owner_records(context, reported if diff is not None else set())
+    findings += _packages_unread(context)
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

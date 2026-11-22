@@ -5226,13 +5226,14 @@ def rpm_owners(run, database, links):
     {"arches": {canonical path: the owner's architecture}, "contested":
     {canonical paths more than one package lists}})."""
 
-    owners, complete, arches, contested = {}, True, {}, set()
-    facts = {"arches": arches, "contested": contested}
+    owners, complete, arches, contested, claims, problems = {}, True, {}, set(), {}, []
+    facts = {"arches": arches, "contested": contested, "claims": claims, "problems": problems}
     connection = sqlite_readonly(run, database)
     try:
         for (blob,) in connection.execute("SELECT blob FROM Packages"):
             run.check_time()
             if len(owners) >= MAX_PACKAGE_FILES:
+                problems.append("more package files than the limit")
                 return owners, False, facts
             try:
                 header = RpmHeader(bytes(blob))
@@ -5252,11 +5253,29 @@ def rpm_owners(run, database, links):
                             arches[canonical] = arch if isinstance(arch, str) else None
                         elif owners[canonical] != package:
                             contested.add(canonical)
+                            _claim(claims, canonical, owners[canonical], arches[canonical])
+                            _claim(
+                                claims, canonical, package, arch if isinstance(arch, str) else None
+                            )
             except (ValueError, IndexError, TypeError, struct.error):
                 complete = False
+                if len(problems) < 5:
+                    problems.append("a package header couldn't be read")
     finally:
         connection.close()
     return owners, complete, facts
+
+
+MAX_CLAIMS = 8  # packages sent for one path more than one lists
+
+
+def _claim(claims, canonical, package, arch):
+    """Every package that lists a contested path (#217), in the order met,
+    so the controller can check the file against each of them."""
+    found = claims.setdefault(canonical, [])
+    # One past the limit is kept, so the record can say the list was cut.
+    if (package, arch) not in found and len(found) <= MAX_CLAIMS:
+        found.append((package, arch))
 
 
 def _dpkg_list_paths(run, package_list):
@@ -5279,20 +5298,24 @@ def package_owners(run, module, links):
     (None, None, False, {}, facts) when there is neither; complete is False
     when a list was unreadable or cut short."""
     owners, complete, diversions = {}, True, {}
-    arches, contested = {}, set()
-    facts = {"arches": arches, "contested": contested}
+    arches, contested, claims, problems = {}, set(), {}, []
+    facts = {"arches": arches, "contested": contested, "claims": claims, "problems": problems}
     if os.path.lexists(path(DPKG_STATUS)):
         try:
             names, cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
         except OSError:
             return None, None, False, {}, facts
         complete = not cut
+        if cut:
+            problems.append("more package lists than the limit")
         for name in names:
             if not name.endswith(".list"):
                 continue
             run.check_time()
             listed, whole = _dpkg_list_paths(run, _join(DPKG_INFO, name))
             complete = complete and whole
+            if not whole and len(problems) < 5:
+                problems.append(f"a package list couldn't be read whole: {name[:100]}")
             # "libpam-modules:amd64.list" for a Multi-Arch: same package
             package, _, arch = name[: -len(".list")].partition(":")
             for line in listed:
@@ -5302,6 +5325,8 @@ def package_owners(run, module, links):
                     arches[canonical] = arch or None
                 elif owners[canonical] != package:
                     contested.add(canonical)
+                    _claim(claims, canonical, owners[canonical], arches[canonical])
+                    _claim(claims, canonical, package, arch or None)
         # A diversion moves the original package's file aside: that package
         # now owns the diverted-to path, and the file at the original path
         # belongs to the diverting package only if its own list has it —
@@ -5337,9 +5362,12 @@ def package_owners(run, module, links):
             continue
         owners, complete, facts = rpm_owners(run, resolved, links)
         return owners, "rpm", complete, {}, facts
+    problems.append(NO_PACKAGE_RECORDS)
     return None, None, False, {}, facts
 
 
+NO_PACKAGE_RECORDS = "no dpkg or rpm records were found"
+OUT_OF_TIME = "the package records couldn't be read in the time allowed"
 OWNERS_TIME_SHARE = 0.4  # of the module's remaining time, at most
 MAX_PAM_OWNERS = 2000  # owner records for PAM module files (a system has a few hundred)
 
@@ -5478,6 +5506,12 @@ def module_system_files(run):
             "truncated_reason": cut,
         },
     )
+    if owners_problem:
+        facts = dict(facts or {})
+        facts["problems"] = [
+            OUT_OF_TIME if owners_problem == "time"
+            else f"the package records couldn't be read: {owners_problem}"[:200]
+        ]  # fmt: skip
     record_pam_owners(run, module, owners, owners_complete, facts, links)
     run.check_time()
 
@@ -5493,7 +5527,7 @@ def record_pam_owners(run, module, owners, complete, facts, links):
     left out and the owners called incomplete. The summary always comes, so "no owner
     recorded" is never mistaken for "owned by nothing"."""
     facts = facts or {}
-    arches, contested = facts.get("arches") or {}, facts.get("contested") or set()
+    arches, claims, cut = facts.get("arches") or {}, facts.get("claims") or {}, None
     dirs = sorted({tuple(canonical_path(p, links).split("/")) for p in PAM_MODULE_DIRS})
     prefixes = tuple(
         "/".join(parts[: next((i for i, x in enumerate(parts) if "*" in x), len(parts))])
@@ -5505,30 +5539,64 @@ def record_pam_owners(run, module, owners, complete, facts, links):
             run.check_time()
         if file.startswith(prefixes) and _in_pam_dir(file, dirs):
             selected.append(file)
+    # Only files that are there: a package list naming made-up paths can't
+    # fill the limit and push a real module's owner out.
+    present = []
+    for i, file in enumerate(selected):
+        if i % 256 == 0:
+            run.check_time()
+        try:
+            there = os.path.lexists(path(file))
+        except UnsafePath:
+            there = True  # onto a network mount: not looked at, so kept, as before
+        if there:
+            present.append(file)
+    problems = list(facts.get("problems") or [])
     count = 0
-    for file in sorted(selected):
+    for file in sorted(present):
         package, arch = owners[file], arches.get(file)
         if not package:
             continue
-        if not (_sendable_path(file) and OWNER_NAME.match(package)) or (
-            arch is not None and not OWNER_NAME.match(arch)
-        ):
+        if not _sendable_path(file):
             complete = False
+            if len(problems) < 5:
+                problems.append("a PAM module path that can't be sent")
             continue
         if count >= MAX_PAM_OWNERS:
-            complete = False
+            complete, cut = False, "limit"
             break
-        entry = {"path": file, "package": package}
-        if arch:
-            entry["arch"] = arch
-        if file in contested:
-            entry["several"] = True  # more than one package lists it: the owner is a guess
+        named = [(package, arch)] + [c for c in claims.get(file, ()) if c != (package, arch)]
+        # A name dpkg and rpm never make is left out, the others still sent: one
+        # odd name mustn't drop the real owner beside it (#224's review).
+        valid = [
+            (p, a) for p, a in named if OWNER_NAME.match(p) and (a is None or OWNER_NAME.match(a))
+        ]
+        if not valid:
+            entry = {"path": file, "odd_owner": True}
+        else:
+            entry = {"path": file, "package": valid[0][0]}
+            if valid[0][1]:
+                entry["arch"] = valid[0][1]
+            if len(valid) > 1:
+                entry["several"] = True  # more than one package lists it: the owner is a guess
+                entry["claims"] = [
+                    {"package": p, **({"arch": a} if a else {})} for p, a in valid[:MAX_CLAIMS]
+                ]
+                if len(claims.get(file, ())) > MAX_CLAIMS:
+                    entry["claims_cut"] = True
+            if len(valid) < len(named):
+                entry["odd_claims"] = len(named) - len(valid)
         run.stream.record(module, "pam_module_owner", entry)
         count += 1
     run.stream.record(
         module,
         "pam_owners_summary",
-        {"complete": bool(complete) and owners is not None, "count": count},
+        {
+            "complete": bool(complete) and owners is not None,
+            "count": count,
+            **({"cut": cut} if cut else {}),
+            **({"problems": problems[:5]} if problems else {}),
+        },  # fmt: skip
     )
 
 

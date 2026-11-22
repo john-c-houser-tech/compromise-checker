@@ -557,7 +557,11 @@ def _moment(text: str | None) -> datetime | None:
 # of a check, which a rule written for its weaker forms mustn't hide (#189: a
 # module that isn't its package's file, under a rule for unchecked changes; #217:
 # its owner moved, which is how such a module would be hidden).
-NAMED_ONLY = {("pam.changes", "differs"), ("pam.changes", "owner_changed")}
+NAMED_ONLY = {
+    ("pam.changes", "differs"),
+    ("pam.changes", "owner_changed"),
+    ("pam.changes", "owners_cut"),
+}
 
 
 def matches(

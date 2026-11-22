@@ -5529,7 +5529,11 @@ def record_pam_owners(run, module, owners, complete, facts, links):
     for i, file in enumerate(selected):
         if i % 256 == 0:
             run.check_time()
-        if os.path.lexists(path(file)):
+        try:
+            there = os.path.lexists(path(file))
+        except UnsafePath:
+            there = True  # onto a network mount: not looked at, so kept, as before
+        if there:
             present.append(file)
     count = 0
     for file in sorted(present):

@@ -1342,3 +1342,29 @@ def test_a_module_no_package_lists_is_high_whatever_the_unowned_scan_sent():
 def test_an_owner_list_cut_at_its_limit_is_medium():
     found = owner_findings({UNIX: {"sha256": BAD}}, {UNIX: owner()}, complete=False, cut="limit")
     assert [(f.band, f.variant) for f in found] == [("medium", "owners_cut")]
+
+
+def test_several_a_mismatch_is_asked_again_when_another_lookup_failed_here():
+    owners = {UNIX: claims_owner(("libpam-modules", "amd64"), ("other", "amd64"))}
+
+    class Down(ByPackage):
+        def package(self, lookup):
+            found = super().package(lookup)
+            if lookup.package == "other":
+                found.transient = True
+            return found
+
+    result = first_check(owners, Down({"libpam-modules": {UNIX: {"sha256": GOOD}}}))
+    assert result["outcome"] == "differs" and result["transient"] is True
+
+
+def test_an_unlisted_link_isn_t_reported_as_a_module_no_package_installed():
+    pam = {UNIX: {"sha256": BAD}, OTHER: {"type": "l", "link_target": "/opt/agent/pam.so"}}
+    assert owner_findings(pam, {UNIX: owner()}) == []
+
+
+def test_owners_cut_needs_a_rule_that_names_it():
+    from checker.whitelist import Match, matches
+
+    cut = {"check": "pam.changes", "variant": "owners_cut", "entities": []}
+    assert not matches(Match(check="pam.changes"), cut)

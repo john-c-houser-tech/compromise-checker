@@ -403,7 +403,12 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
     for outcome in wanted:
         for result in results:
             if result.get("outcome") == outcome:
-                return dict(result, several=[_who(c) for c in claims])
+                found = dict(result, several=[_who(c) for c in claims])
+                if outcome != "matched" and any(r.get("transient") for r in results):
+                    # Another package's lookup failed on this side: it may be
+                    # the one that ships this file, so it is asked again.
+                    found["transient"] = True
+                return found
     reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
     return dict(
         not_checked("more than one package lists it, and none of them could be checked"

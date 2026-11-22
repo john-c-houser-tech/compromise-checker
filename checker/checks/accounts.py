@@ -1175,7 +1175,9 @@ def _pam_owner_records(context: Context) -> list[Finding]:
     for path, item in sorted(context.items("pam").items()):
         if path in listed or path in unowned or not path.endswith(".so"):
             continue
-        if not MODULE_PATH.fullmatch(path) or not (item.get("sha256") or item.get("link_target")):
+        # Regular files: the scan for unowned files looks at those only, so a
+        # link (an agent's installer may make one) isn't reported this way.
+        if not MODULE_PATH.fullmatch(path) or not item.get("sha256") or item.get("type") == "l":
             continue
         found.append(
             Finding(

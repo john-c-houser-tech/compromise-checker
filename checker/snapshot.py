@@ -1270,6 +1270,12 @@ class SnapshotBuilder:
             if data.get("complete") is False:
                 self._module_gap("package_verify", "not every package's files were checked")
 
+    def _on_pam(self, name: str, data: dict[str, Any]) -> None:
+        if name == "module_dir_elsewhere" and isinstance(data.get("path"), str):
+            found = self.live.setdefault("pam_dirs_elsewhere", {})
+            if len(found) < 20:
+                found[data["path"]] = str(data.get("target") or "")[:4096]
+
     def _on_system_files(self, name: str, data: dict[str, Any]) -> None:
         if name == "privileged_file" and data.get("path"):
             self.section("privileged_files").items[data["path"]] = _meta(data)

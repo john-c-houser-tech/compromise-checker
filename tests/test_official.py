@@ -1662,3 +1662,64 @@ def test_an_update_s_temporary_file_is_medium_and_a_plain_name_high():
     assert [(f.band, f.title) for f in found] == [
         ("high", "A PAM module that no package installed")
     ]
+
+
+# --- #226: modules loaded from outside the module directories --------------------------------
+
+
+def rules_findings(lines, elsewhere=None, pam=None, owners=None):
+    from checker.checks import Context, run_checks
+    from checker.snapshot import Section
+
+    current = snap(pam=pam or {UNIX: {"sha256": BAD}}, owners=owners or {UNIX: owner()})
+    current.sections["pam_rules"] = Section(
+        {f"/etc/pam.d/sshd: {line}": {"path": "/etc/pam.d/sshd"} for line in lines}
+    )
+    if elsewhere:
+        current.live["pam_dirs_elsewhere"] = elsewhere
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1")
+    return [f for f in run_checks(context)[0] if f.check == "pam.changes"]
+
+
+@pytest.mark.parametrize(
+    ("line", "reported"),
+    [
+        ("auth required pam_unix.so", False),
+        ("auth required /lib/x86_64-linux-gnu/security/pam_unix.so", False),
+        ("auth required /usr/lib64/security/pam_filter/upperLOWER", False),
+        ("auth required pam_filter/upperLOWER", False),
+        ("auth required /tmp/.x/pam_unix.so", True),
+        ("auth required ../../../../tmp/x.so", True),
+        ("auth [success=1 default=ignore] /dev/shm/x.so", True),
+        ("-session optional /opt/vendor/pam_v.so", True),
+    ],
+)
+def test_a_line_naming_a_module_outside_the_module_directories_is_high(line, reported):
+    found = [f for f in rules_findings([line]) if f.variant == "elsewhere"]
+    assert [f.band for f in found] == (["high"] if reported else [])
+
+
+def test_a_module_directory_that_leads_elsewhere_is_high():
+    found = rules_findings([], elsewhere={"/usr/lib64/security": "/var/tmp/x"})
+    assert [(f.band, f.summary) for f in found if f.variant == "elsewhere"] == [
+        ("high", "/usr/lib64/security -> /var/tmp/x: the modules there aren't checked")
+    ]
+
+
+def test_a_temporary_name_a_line_loads_stays_high():
+    temp = "/usr/lib/x86_64-linux-gnu/security/pam_unix.so.dpkg-new"
+    pam = {UNIX: {"sha256": BAD}, temp: {"sha256": GOOD}}
+    found = rules_findings(["auth required pam_unix.so.dpkg-new"], pam=pam)
+    assert [(f.band, f.title) for f in found if temp in f.summary] == [
+        ("high", "A PAM module that no package installed")
+    ]
+
+
+def test_snapshot_keeps_module_directories_elsewhere(tmp_path):
+    from test_snapshot import snapshot_of_records
+
+    records = host_records(
+        extra=[rec("pam", "module_dir_elsewhere", path="/usr/lib64/security", target="/var/tmp/x")]
+    )
+    found = snapshot_of_records(records, tmp_path).live["pam_dirs_elsewhere"]
+    assert found == {"/usr/lib64/security": "/var/tmp/x"}

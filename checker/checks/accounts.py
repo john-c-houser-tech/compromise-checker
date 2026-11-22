@@ -847,6 +847,12 @@ def sshd_config(context: Context) -> list[Finding]:
 
 def pam_module(line: str) -> str | None:
     """The module a PAM line loads (`pam_exec.so`), if it loads one."""
+    token = pam_module_token(line)
+    return token.rsplit("/", 1)[-1] if token is not None else None
+
+
+def pam_module_token(line: str) -> str | None:
+    """The module as the line names it: a name, or a path."""
     rest = line.split(": ", 1)[-1].strip()
     if rest.startswith("@"):
         return None
@@ -857,10 +863,28 @@ def pam_module(line: str) -> str | None:
         closing = next((i for i, t in enumerate(tokens) if t.endswith("]")), None)
         if closing is None or closing + 1 >= len(tokens):
             return None
-        return tokens[closing + 1].rsplit("/", 1)[-1]
+        return tokens[closing + 1]
     if tokens[1] in ("include", "substack"):
         return None
-    return tokens[2].rsplit("/", 1)[-1]
+    return tokens[2]
+
+
+def _outside_module_dirs(token: str) -> str | None:
+    """Where a module the line names by path is, when that isn't inside a
+    PAM module directory (Linux-PAM puts its own directory before a
+    relative name only, so `/tmp/x.so` and `../../../tmp/x.so` load from
+    anywhere), else None."""
+    import posixpath
+
+    from checker.official import MODULE_PATH
+
+    if "/" not in token:
+        return None
+    if token.startswith("/"):
+        where = posixpath.normpath(token)
+        return None if MODULE_PATH.fullmatch(where) else where
+    where = posixpath.normpath(token)
+    return token if where.startswith("..") else None
 
 
 DISTRIBUTIONS = {"ubuntu": "Ubuntu", "rocky": "Rocky Linux", "almalinux": "AlmaLinux"}
@@ -1194,6 +1218,45 @@ def _packages_unread(context: Context) -> list[Finding]:
 UPDATE_TEMPORARY = re.compile(r"(?:\.dpkg-(?:new|tmp|dist|old)|;[0-9a-f]{8})\Z")
 
 
+def _modules_elsewhere(context: Context) -> list[Finding]:
+    """PAM loading modules the module directories' listing doesn't hold
+    (#226), so they are never checked: a line naming a module by a path
+    outside them, and a module directory that leads somewhere else."""
+    found = []
+    for key, item in sorted(context.items("pam_rules").items()):
+        token = pam_module_token(key)
+        where = _outside_module_dirs(token) if token else None
+        if where is None:
+            continue
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM line loads a module from outside the module directories",
+                COMPROMISE,
+                "high",
+                f"{key} (loads {where}, which isn't checked)",
+                [f"path:{item.get('path')}", f"module:{where}"],
+                [{"item": ["pam_rules", key]}],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    elsewhere = context.snapshot.live.get("pam_dirs_elsewhere")
+    for directory, target in sorted((elsewhere if isinstance(elsewhere, dict) else {}).items()):
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM module directory leads somewhere else",
+                COMPROMISE,
+                "high",
+                f"{directory} -> {target}: the modules there aren't checked",
+                [f"path:{directory}"],
+                [],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    return found
+
+
 def _unhashed_modules(context: Context, reported: set[str]) -> list[Finding]:
     """Files in a PAM module directory that couldn't be checked against a
     package, said in their own right: a regular file the collector didn't
@@ -1318,6 +1381,7 @@ def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
         )
     listed = owners.get("owners") or {}
     complete = owners.get("complete") is True
+    loaded = {pam_module(key) for key in context.items("pam_rules")}
     unowned = context.items("unowned_executables")
     for path, item in sorted(context.items("pam").items()):
         # Any name: PAM loads a module by its path, whatever it ends in.
@@ -1328,7 +1392,13 @@ def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
         if not MODULE_PATH.fullmatch(path) or not item.get("sha256") or item.get("type") == "l":
             continue
         record = listed.get(path)
-        if UPDATE_TEMPORARY.search(path) and record is None and complete:
+        # Softer only while no PAM line loads it: a line can name any file.
+        if (
+            UPDATE_TEMPORARY.search(path)
+            and record is None
+            and complete
+            and path.rsplit("/", 1)[-1] not in loaded
+        ):
             found.append(
                 Finding(
                     "pam.changes",
@@ -1449,6 +1519,7 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "version_unverified",
         "packages_unread",
         "unhashed",
+        "elsewhere",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1524,6 +1595,7 @@ def pam_changes(context: Context) -> list[Finding]:
     findings += _pam_owner_records(context, reported if diff is not None else set())
     findings += _packages_unread(context)
     findings += _unhashed_modules(context, reported if diff is not None else set())
+    findings += _modules_elsewhere(context)
     for path in context.items("unowned_executables"):
         # Any name: PAM loads a module by its path.
         if "/security/" in path and not UPDATE_TEMPORARY.search(path):

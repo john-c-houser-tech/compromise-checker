@@ -16,6 +16,7 @@ one, and the version exactly one installed package's. Anything else is
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -705,6 +706,12 @@ def verifier_for(
     or None when it is turned off. `cached_only`: answers only from what is
     already kept here (a run whose earlier host found the servers out of
     reach), its misses marked to be asked again."""
+    from checker.verify.prune import prune_caches
+
+    # Also when turned off: what an earlier run kept still goes. At most
+    # once a day a folder, so cheap for every host; tidying never stops a check.
+    with contextlib.suppress(Exception):
+        prune_caches(home)
     if settings is None or not settings.enabled:
         return None
     from checker.verify import deb

@@ -521,6 +521,37 @@ def test_cli_analyze(home, capsys):
     assert "Host       db01" in out and "Host       web01" in out
 
 
+def test_cli_analyze_checks_unfinished_hosts_first_and_prints_in_order(home, capsys, monkeypatch):
+    add_bundle(home, "b1", 0, host_records())
+    add_bundle(home, "d1", 0, host_records(), host="db01")
+    assert cli.main(["analyze", "--all"]) == 0  # both analysed once: stored
+    capsys.readouterr()
+    real, order = cli.analyze, []
+
+    def analyze(store, host, *args, **kwargs):
+        order.append(host)
+        return real(store, host, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "analyze", analyze)
+    # web01's last check left package lookups unfinished (its stored analysis).
+    monkeypatch.setattr(cli, "unfinished", lambda found: (found or {}).get("host") == "web01")
+    assert cli.main(["analyze", "--all"]) == 0
+    assert order == ["web01", "db01"]
+    out = capsys.readouterr().out
+    assert out.index("Host       db01") < out.index("Host       web01")  # printed in order
+
+    # Stopped part-way (Ctrl-C, say): what was already analysed is still shown.
+    def stopped(store, host, *args, **kwargs):
+        if host == "db01":
+            raise KeyboardInterrupt
+        return real(store, host, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "analyze", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["analyze", "--all"])
+    assert "Host       web01" in capsys.readouterr().out
+
+
 def test_changes_that_are_not_findings():
     # An out-of-tree module already there at the baseline: still reported
     # (the baseline's bundle may never have been analysed), but not as new.

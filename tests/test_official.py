@@ -384,6 +384,17 @@ def test_failures_on_this_machine_s_side_are_marked_and_asked_again():
     # Out of time is asked again too, but doesn't stop the run's other hosts.
     slow = check(BEFORE, AFTER, Slow())
     assert slow["files"][UNIX]["transient"] is True and "offline" not in slow["files"][UNIX]
+    assert "starved" not in slow["files"][UNIX]
+
+    class Starved(FakeVerifier):
+        def package(self, lookup):
+            return Official(lookup, reason="the run's time", transient=True, starved=True)
+
+    starved = check(BEFORE, AFTER, Starved())
+    assert starved["files"][UNIX]["starved"] is True
+    assert official.summary(starved)["starved"] == 1
+    assert official.unfinished({"official_files": official.summary(starved)})
+    assert not official.unfinished({"official_files": official.summary(slow)})
     assert not official.stored_is_current(slow, "b0", retrying=True)
     assert not official.unreachable({"official_files": official.summary(slow)})
     matched = check(BEFORE, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))
@@ -723,8 +734,10 @@ def test_a_run_s_download_time_is_shared_and_past_it_the_cache_answers(tmp_path)
     assert result.transient and not result.found
     assert "this run's 90 seconds for package downloads" in result.reason
     assert "verify.seconds_per_run" in result.reason
+    assert result.starved and not result.offline
     # Out of reach wins its own reason; no clock, no cap.
     down = official.verifier_for(settings, tmp_path, cached_only=True, run=clock)
+    assert down.package(Lookup("rocky", "9", "pam", "1.5.1-4.el9", "x86_64")).starved
     assert (
         "out of reach" in down.package(Lookup("rocky", "9", "pam", "1.5.1-2.el9", "x86_64")).reason
     )
@@ -1845,3 +1858,14 @@ def test_continuations_as_linux_pam_joins_them():
     # A blank or comment-only line inside a continuation is skipped, the joining goes on.
     assert pam_lines(["auth required \\", "", "# note", "/tmp/x.so"]) == ["auth required /tmp/x.so"]
     assert pam_lines(["auth\trequired   pam_unix.so"]) == ["auth required pam_unix.so"]
+
+
+def test_hosts_left_unfinished_go_first_the_rest_in_order():
+    assert official.unfinished({"official_files": {"transient": 2, "starved": 2}})
+    # Out of its own time only: not first, that's for hosts the run left out.
+    assert not official.unfinished({"official_files": {"transient": 2, "starved": 0}})
+    assert not official.unfinished({"official_files": {"transient": 0}})
+    assert not official.unfinished({"official_files": None}) and not official.unfinished(None)
+    left = {"c", "e"}
+    order = official.unfinished_first(list("abcde"), left.__contains__)
+    assert order == ["c", "e", "a", "b", "d"]

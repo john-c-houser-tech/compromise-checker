@@ -275,7 +275,9 @@ class Ubuntu:
             # In none of the current lists under any version (a vendor's or a
             # PPA's package): Launchpad and the dated copies aren't asked,
             # so its name isn't sent there.
-            raise PackageError(f"{show(package)} isn't one of Ubuntu's packages")
+            unknown = PackageError(f"{show(package)} isn't one of Ubuntu's packages")
+            unknown.unlisted = True
+            raise unknown
         if hit is None and self.snapshot:
             copies = self._copies(codename, package, version, lists_arch)
             hit = self._find(copies, package, version, arch, lists_arch, problems)
@@ -285,6 +287,7 @@ class Ubuntu:
                 f"{show(package)} {show(version)} isn't in Ubuntu's archive{why}"
             )
             missing.transient = bool(problems)  # a list that failed: worth asking again later
+            missing.unlisted = not problems
             raise missing
         base, entry, signer = hit
         if entry.size > MAX_DEB:

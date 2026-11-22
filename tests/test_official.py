@@ -1339,9 +1339,9 @@ def test_a_module_no_package_lists_is_high_whatever_the_unowned_scan_sent():
     assert len(found) == 1 and found[0].evidence == [{"item": ["unowned_executables", OTHER]}]
 
 
-def test_an_owner_list_cut_at_its_limit_is_medium():
+def test_an_owner_list_cut_at_its_limit_is_high():
     found = owner_findings({UNIX: {"sha256": BAD}}, {UNIX: owner()}, complete=False, cut="limit")
-    assert [(f.band, f.variant) for f in found] == [("medium", "owners_cut")]
+    assert [(f.band, f.variant) for f in found] == [("high", "owners_cut")]
 
 
 def test_several_a_mismatch_is_asked_again_when_another_lookup_failed_here():
@@ -1368,3 +1368,77 @@ def test_owners_cut_needs_a_rule_that_names_it():
 
     cut = {"check": "pam.changes", "variant": "owners_cut", "entities": []}
     assert not matches(Match(check="pam.changes"), cut)
+
+
+# --- #224's second round: what the records can't vouch for ---------------------------------
+
+
+def unverified_findings(after_owner, verifier, packages=None):
+    before, after = owner_swap(BAD, owner())
+    after["owners"] = {**after["owners"], OTHER: after_owner}
+    if packages is not None:
+        after["packages"] = packages
+    before["owners"] = {**before["owners"], OTHER: after_owner}
+    found = pam_findings(before, after, verifier)
+    return [f for f in found if OTHER in f.summary]
+
+
+def test_a_module_credited_to_a_package_not_installed_is_medium():
+    mine = unverified_findings(owner("ghost-pkg"), FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert [(f.band, f.variant) for f in mine] == [("medium", "owner_unverified")]
+    assert "exactly one installed version" in mine[0].summary
+
+
+def test_a_module_credited_to_a_package_not_in_the_distribution_is_medium():
+    class Vendor(FakeVerifier):
+        def package(self, lookup):
+            if lookup.package == "duo-unix":
+                return Official(lookup, reason="'duo-unix' isn't one of Ubuntu's packages",
+                                unlisted=True)  # fmt: skip
+            return super().package(lookup)
+
+    packages = {**AFTER["packages"], "duo-unix amd64": {"version": "2.0.3"}}
+    mine = unverified_findings(owner("duo-unix"), Vendor({UNIX: {"sha256": BAD}}), packages)
+    assert [(f.band, f.variant) for f in mine] == [("medium", "owner_unverified")]
+    # A lookup that failed on this side (no network) isn't one.
+    mine = unverified_findings(owner(), FakeVerifier(None, "no network"))
+    assert mine == []
+
+
+def test_more_claimants_than_sent_is_high():
+    claimed = dict(claims_owner(("a", "amd64"), ("b", "amd64")), claims_cut=True)
+    mine = unverified_findings(claimed, FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert [(f.band, f.variant) for f in mine] == [("high", "owner_unverified")]
+
+
+def test_an_odd_owner_record_is_a_module_no_package_installed_even_when_incomplete():
+    pam = {UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}}
+    owners = {UNIX: owner(), OTHER: {"package": None, "arch": None, "several": False, "odd": True}}
+    found = owner_findings(pam, owners, complete=False)
+    assert [(f.band, f.summary) for f in found] == [
+        ("high", f"{OTHER}: its package records name it only with names dpkg and rpm never make")
+    ]
+
+
+def test_records_that_couldn_t_be_read_are_medium():
+    from checker.checks import Context, run_checks
+
+    current = snap(pam={UNIX: {"sha256": BAD}}, owners={UNIX: owner()}, owners_complete=False)
+    current.live["pam_owners"]["problems"] = ["a package header couldn't be read"]
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1")
+    found = [f for f in run_checks(context)[0] if f.check == "pam.changes"]
+    assert [(f.band, f.variant) for f in found] == [("medium", "owners_unread")]
+
+
+def test_snapshot_keeps_odd_owners_and_problems(tmp_path):
+    from test_snapshot import snapshot_of_records
+
+    records = host_records(
+        extra=[
+            rec("system_files", "pam_module_owner", path=UNIX, odd_owner=True),
+            rec("system_files", "pam_owners_summary", complete=False, count=1,
+                problems=["a package list couldn't be read whole: x.list"]),
+        ]
+    )  # fmt: skip
+    found = snapshot_of_records(records, tmp_path).live["pam_owners"]
+    assert found["owners"][UNIX]["odd"] is True and found["problems"]

@@ -1143,17 +1143,24 @@ def _owner_changes(context: Context, reported: set[str]) -> list[Finding]:
     return found
 
 
-def _pam_owner_records(context: Context) -> list[Finding]:
-    """What the server's owner records leave out: a PAM module no package
-    lists, in a complete owner list, though the scan for unowned files
-    didn't report it (its own limit can be filled with planted files); and a
-    list cut at its limit, which no real system reaches (a few hundred PAM
-    module files), so the modules past it can't be checked."""
+def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
+    """What the server's owner records leave out or can't vouch for:
+    - a list cut at its limit, which no real system reaches (a few hundred
+      PAM module files): high, since the modules past it can't be checked;
+    - a list left incomplete by records that couldn't be read: medium;
+    - a PAM module no package lists, in a complete owner list, or listed only
+      under names dpkg and rpm never make: high, even when the scan for
+      unowned files didn't send it (its own limit can be filled);
+    - an unchanged module whose package isn't installed once, or isn't in
+      the distribution's signed lists (a vendor's package, or a made-up one):
+      medium (`owner_unverified`), high when more packages list it than the
+      collector sends."""
     from checker.official import MODULE_PATH
 
     owners = context.snapshot.live.get("pam_owners")
     if not isinstance(owners, dict):
         return []
+    distribution = _distribution(context)
     found = []
     if owners.get("cut") == "limit":
         found.append(
@@ -1161,23 +1168,42 @@ def _pam_owner_records(context: Context) -> list[Finding]:
                 "pam.changes",
                 "More PAM module files than any system has: not all their owners were recorded",
                 COMPROMISE,
-                "medium",
+                "high",
                 f"{len(owners.get('owners') or {})} owner records sent, the collector's limit",
                 [],
                 [],
                 variant="owners_cut",
-            )
+            )  # fmt: skip
         )
-    if owners.get("complete") is not True:
-        return found
+    elif owners.get("complete") is not True and owners.get("problems"):
+        found.append(
+            Finding(
+                "pam.changes",
+                "The server's package records couldn't all be read",
+                COMPROMISE,
+                "medium",
+                "; ".join(str(p) for p in owners["problems"]),
+                [],
+                [],
+                variant="owners_unread",
+            )  # fmt: skip
+        )
     listed = owners.get("owners") or {}
+    complete = owners.get("complete") is True
     unowned = context.items("unowned_executables")
     for path, item in sorted(context.items("pam").items()):
-        if path in listed or path in unowned or not path.endswith(".so"):
+        if path in unowned or not path.endswith(".so"):
             continue
         # Regular files: the scan for unowned files looks at those only, so a
         # link (an agent's installer may make one) isn't reported this way.
         if not MODULE_PATH.fullmatch(path) or not item.get("sha256") or item.get("type") == "l":
+            continue
+        record = listed.get(path)
+        if isinstance(record, dict) and record.get("odd"):
+            why = "its package records name it only with names dpkg and rpm never make"
+        elif record is None and complete:
+            why = "no package lists it"
+        else:
             continue
         found.append(
             Finding(
@@ -1185,10 +1211,38 @@ def _pam_owner_records(context: Context) -> list[Finding]:
                 "A PAM module that no package installed",
                 COMPROMISE,
                 "high",
-                f"{path}: no package lists it",
+                f"{path}: {why}",
                 [f"path:{path}"],
                 [{"item": ["pam", path]}],
-            )
+            )  # fmt: skip
+        )
+    modules = context.items("pam")
+    for path, result in sorted(((context.official or {}).get("files") or {}).items()):
+        if (
+            not isinstance(result, dict)
+            or result.get("how") != "unchanged"
+            or path in reported
+            or not result.get("unverified")
+            or _held(result)
+            or result.get("outcome") != "not_checked"
+            or official_result(context, path, modules) is None
+        ):
+            continue
+        cut = result.get("claims_cut") is True
+        why = str(result.get("reason") or "not checked")
+        if cut:
+            why += "; more packages list it than the collector sends"
+        found.append(
+            Finding(
+                "pam.changes",
+                f"A PAM module whose package can't be found in {distribution}'s signed packages",
+                COMPROMISE,
+                "high" if cut else "medium",
+                f"{path}: {why}",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+                variant="owner_unverified",
+            )  # fmt: skip
         )
     return found
 
@@ -1229,6 +1283,8 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "differs",
         "owner_changed",
         "owners_cut",
+        "owners_unread",
+        "owner_unverified",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1301,7 +1357,7 @@ def pam_changes(context: Context) -> list[Finding]:
             findings.append(_pam_modules_updated(context, explained))
     findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
     findings += _owner_changes(context, reported if diff is not None else set())
-    findings += _pam_owner_records(context)
+    findings += _pam_owner_records(context, reported if diff is not None else set())
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

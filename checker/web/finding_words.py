@@ -315,6 +315,14 @@ BY_VARIANT = {
         "The server lists more files in the part of the system that checks passwords than any real system has, so not all of them could be checked against the distribution's packages. Filling that list is a way to hide a tampered file.",
         "Ask who added files there. If no one can say, get advice before you change anything.",
     ),
+    ("pam.changes", "owners_unread"): (
+        "Some of the server's records of which package installed which file couldn't be read, so files in the part of the system that checks passwords may not all have been checked.",
+        "Ask someone to look at the package records on this server. Damaged ones are rare.",
+    ),
+    ("pam.changes", "owner_unverified"): (
+        "A file in the part of the system that checks passwords belongs, by the server's records, to a package that isn't installed or isn't one of the distribution's signed packages, so it couldn't be checked. Software from another company (such as a login-security vendor) does this honestly; so would someone hiding a tampered file.",
+        "If you know the software that installed it, add a whitelist rule for this file. If not, get advice.",
+    ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
         "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",

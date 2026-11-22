@@ -758,6 +758,7 @@ def test_launchpad_isn_t_asked_about_a_package_ubuntu_doesn_t_have(pinned):
     vendor = Lookup("ubuntu", "24.04", "duo-unix", "2.0.3", "amd64")
     official = ubuntu_verifier(site, ubuntu_snapshot=SNAP, launchpad=LP).package(vendor)
     assert "isn't one of Ubuntu's packages" in official.reason
+    assert official.unlisted is True  # #224: a module credited to it is reported
     assert not any(u.startswith(LP) or u.startswith(SNAP) for u in site.asked)
 
 

@@ -308,11 +308,19 @@ def _against(
         return not_checked("the package list wasn't collected whole")
     installed = _installed(snapshot, owner)
     if installed is None:
+        # The records name an owner the package list doesn't have once: the
+        # module can't be held to any signed package (#224's review).
         if "owner_changed" in base:
-            return not_checked(
-                "there isn't exactly one installed version of the baseline's owning package"
+            return dict(
+                not_checked(
+                    "there isn't exactly one installed version of the baseline's owning package"
+                ),
+                unverified=True,
             )
-        return not_checked("there isn't exactly one installed version of its package")
+        return dict(
+            not_checked("there isn't exactly one installed version of its package"),
+            unverified=True,
+        )
     _, version, arch = installed
     earlier = _installed(baseline, owner) if _complete(baseline, "packages") else None
     if earlier is not None and earlier[2] != arch:
@@ -360,7 +368,11 @@ def _against(
         result["cached"] = True  # answered from this machine's cache, no download
     if not official.found:
         return dict(
-            result, outcome="not_checked", reason=official.reason, transient=official.transient
+            result,
+            outcome="not_checked",
+            reason=official.reason,
+            transient=official.transient,
+            **({"unverified": True} if official.unlisted else {}),
         )
     if target.link_target is not None:
         outcome = _compare_link(official, target, _merged_dirs(snapshot))
@@ -404,17 +416,25 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
         for result in results:
             if result.get("outcome") == outcome:
                 found = dict(result, several=[_who(c) for c in claims])
+                if owner.get("claims_cut"):
+                    found["claims_cut"] = True
                 if outcome != "matched" and any(r.get("transient") for r in results):
                     # Another package's lookup failed on this side: it may be
                     # the one that ships this file, so it is asked again.
                     found["transient"] = True
                 return found
     reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
+    marks = {}
+    if any(r.get("unverified") for r in results) or owner.get("claims_cut"):
+        marks["unverified"] = True
+    if owner.get("claims_cut"):
+        marks["claims_cut"] = True  # more packages list it than the collector sends
     return dict(
         not_checked("more than one package lists it, and none of them could be checked"
                     + (f" ({'; '.join(reasons)})" if reasons else "")),
         several=[_who(c) for c in claims],
         transient=any(r.get("transient") for r in results),
+        **marks,
     )  # fmt: skip
 
 

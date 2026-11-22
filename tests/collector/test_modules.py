@@ -3586,7 +3586,7 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(
             owners[unix],
             {"path": unix, "package": "vim", "several": True,
-             "claims": [{"package": "libpam-modules", "arch": "amd64"}, {"package": "vim"}]},
+             "claims": [{"package": "vim"}, {"package": "libpam-modules", "arch": "amd64"}]},
         )  # fmt: skip
         self.assertEqual(owners[unix + ".real"]["package"], "libpam-modules")
         self.assertEqual(owners[unix + ".real"]["arch"], "amd64")
@@ -3647,12 +3647,15 @@ class SystemFilesTests(FixtureRoot):
         self.write("var/lib/dpkg/info/" + "p" * 200 + ".list", b"/usr/lib/security/pam_x.so\n")
         self.present("/usr/lib/security/pam_good.so", "/usr/lib/security/pam_x.so")
         records = self.run_with(caps={})
+        # The odd package name is said, not dropped (a name dpkg never makes); the
+        # huge path names no file that is there.
         self.assertEqual(
-            [r["path"] for r in records_named(records, "pam_module_owner")],
-            ["/usr/lib/security/pam_good.so"],
-        )
+            records_named(records, "pam_module_owner"),
+            [{"path": "/usr/lib/security/pam_good.so", "package": "libpam-good"},
+             {"path": "/usr/lib/security/pam_x.so", "odd_owner": True}],
+        )  # fmt: skip
         self.assertEqual(
-            records_named(records, "pam_owners_summary"), [{"complete": False, "count": 1}]
+            records_named(records, "pam_owners_summary"), [{"complete": True, "count": 2}]
         )
         self.assertEqual(records[-1]["modules"]["system_files"]["status"], "ok")
 
@@ -3739,6 +3742,40 @@ class SystemFilesTests(FixtureRoot):
         self.assertEqual(
             records_named(records, "pam_owners_summary"), [{"complete": True, "count": 1}]
         )
+
+    def test_an_odd_name_beside_the_real_owner_doesn_t_drop_it(self):
+        self.fixture()
+        unix = "/usr/lib/security/pam_unix.so"
+        self.write("var/lib/dpkg/info/!x.list", f"{unix}\n".encode())  # sorts first
+        self.write("var/lib/dpkg/info/libpam-modules.list", f"{unix}\n".encode())
+        self.present(unix)
+        records = self.run_with(caps={})
+        self.assertEqual(
+            records_named(records, "pam_module_owner"),
+            [{"path": unix, "package": "libpam-modules", "several": True,
+              "claims": [{"package": "libpam-modules"}], "odd_claims": 1}],
+        )  # fmt: skip
+        self.assertTrue(records_named(records, "pam_owners_summary")[0]["complete"])
+
+    def test_more_claims_than_the_limit_are_said_to_be_cut(self):
+        self.fixture()
+        unix = "/usr/lib/security/pam_unix.so"
+        for i in range(12):
+            self.write(f"var/lib/dpkg/info/a{i:02d}.list", f"{unix}\n".encode())
+        self.present(unix)
+        owner = records_named(self.run_with(caps={}), "pam_module_owner")[0]
+        self.assertTrue(owner["claims_cut"])
+        self.assertEqual(len(owner["claims"]), 8)
+
+    def test_why_the_owner_list_is_incomplete_is_said(self):
+        self.fixture()
+        self.write("var/lib/dpkg/info/libpam-modules.list", b"/usr/lib/security/pam_a.so\n")
+        os.link(Path(self.root, "var/lib/dpkg/info/libpam-modules.list"),
+                Path(self.root, "var/lib/dpkg/info/linked.list"))  # fmt: skip
+        self.present("/usr/lib/security/pam_a.so")
+        summary = records_named(self.run_with(caps={}), "pam_owners_summary")[0]
+        self.assertFalse(summary["complete"])
+        self.assertIn("couldn't be read whole", summary["problems"][0])
 
     def test_every_package_listing_a_module_is_sent(self):
         self.fixture()

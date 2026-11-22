@@ -1284,6 +1284,18 @@ class SnapshotBuilder:
             owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
             listed = owners["owners"]
             if (
+                data.get("odd_owner") is True
+                and len(listed) < MAX_PAM_OWNERS
+                and data["path"] not in listed
+            ):
+                # Listed only under names dpkg and rpm never make (collector 0.1.5).
+                listed[data["path"]] = {
+                    "package": None,
+                    "arch": None,
+                    "several": False,
+                    "odd": True,
+                }
+            elif (
                 isinstance(data.get("package"), str)
                 and len(listed) < MAX_PAM_OWNERS
                 and data["path"] not in listed
@@ -1303,6 +1315,8 @@ class SnapshotBuilder:
                 ]  # fmt: skip
                 if claims and listed[data["path"]]["several"]:
                     listed[data["path"]]["claims"] = claims
+                    if data.get("claims_cut") is True:
+                        listed[data["path"]]["claims_cut"] = True
             else:
                 owners["dropped"] = owners.get("dropped", 0) + 1
         elif name == "pam_owners_summary":
@@ -1315,6 +1329,9 @@ class SnapshotBuilder:
             )
             if data.get("cut") == "limit":
                 owners["cut"] = "limit"  # more PAM module files than any system has
+            problems = data.get("problems")
+            if isinstance(problems, list):
+                owners["problems"] = [str(p)[:200] for p in problems[:5]]
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 

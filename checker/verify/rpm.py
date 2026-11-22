@@ -273,7 +273,9 @@ class Rpm:
                         raise PackageError(f"{file}: the header was cut short")
                 files, signer = check_header(data, config["keys"][major], package, evr, arch)
                 return files, url, signer
-        raise PackageError(f"{package} {evr} isn't in {system}'s repositories")
+        missing = PackageError(f"{package} {evr} isn't in {system}'s repositories")
+        missing.unlisted = True
+        raise missing
 
     def _roots(self, config, major, rel):
         """The current repositories, then the vault's minors: the one the

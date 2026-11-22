@@ -5226,13 +5226,14 @@ def rpm_owners(run, database, links):
     {"arches": {canonical path: the owner's architecture}, "contested":
     {canonical paths more than one package lists}})."""
 
-    owners, complete, arches, contested, claims = {}, True, {}, set(), {}
-    facts = {"arches": arches, "contested": contested, "claims": claims}
+    owners, complete, arches, contested, claims, problems = {}, True, {}, set(), {}, []
+    facts = {"arches": arches, "contested": contested, "claims": claims, "problems": problems}
     connection = sqlite_readonly(run, database)
     try:
         for (blob,) in connection.execute("SELECT blob FROM Packages"):
             run.check_time()
             if len(owners) >= MAX_PACKAGE_FILES:
+                problems.append("more package files than the limit")
                 return owners, False, facts
             try:
                 header = RpmHeader(bytes(blob))
@@ -5258,6 +5259,8 @@ def rpm_owners(run, database, links):
                             )
             except (ValueError, IndexError, TypeError, struct.error):
                 complete = False
+                if len(problems) < 5:
+                    problems.append("a package header couldn't be read")
     finally:
         connection.close()
     return owners, complete, facts
@@ -5270,7 +5273,8 @@ def _claim(claims, canonical, package, arch):
     """Every package that lists a contested path (#217), in the order met,
     so the controller can check the file against each of them."""
     found = claims.setdefault(canonical, [])
-    if (package, arch) not in found and len(found) < MAX_CLAIMS:
+    # One past the limit is kept, so the record can say the list was cut.
+    if (package, arch) not in found and len(found) <= MAX_CLAIMS:
         found.append((package, arch))
 
 
@@ -5294,20 +5298,24 @@ def package_owners(run, module, links):
     (None, None, False, {}, facts) when there is neither; complete is False
     when a list was unreadable or cut short."""
     owners, complete, diversions = {}, True, {}
-    arches, contested, claims = {}, set(), {}
-    facts = {"arches": arches, "contested": contested, "claims": claims}
+    arches, contested, claims, problems = {}, set(), {}, []
+    facts = {"arches": arches, "contested": contested, "claims": claims, "problems": problems}
     if os.path.lexists(path(DPKG_STATUS)):
         try:
             names, cut = list_directory(DPKG_INFO, MAX_PACKAGE_FILES, run)
         except OSError:
             return None, None, False, {}, facts
         complete = not cut
+        if cut:
+            problems.append("more package lists than the limit")
         for name in names:
             if not name.endswith(".list"):
                 continue
             run.check_time()
             listed, whole = _dpkg_list_paths(run, _join(DPKG_INFO, name))
             complete = complete and whole
+            if not whole and len(problems) < 5:
+                problems.append(f"a package list couldn't be read whole: {name[:100]}")
             # "libpam-modules:amd64.list" for a Multi-Arch: same package
             package, _, arch = name[: -len(".list")].partition(":")
             for line in listed:
@@ -5535,31 +5543,41 @@ def record_pam_owners(run, module, owners, complete, facts, links):
             there = True  # onto a network mount: not looked at, so kept, as before
         if there:
             present.append(file)
+    problems = list(facts.get("problems") or [])
     count = 0
     for file in sorted(present):
         package, arch = owners[file], arches.get(file)
         if not package:
             continue
-        if not (_sendable_path(file) and OWNER_NAME.match(package)) or (
-            arch is not None and not OWNER_NAME.match(arch)
-        ):
+        if not _sendable_path(file):
             complete = False
+            if len(problems) < 5:
+                problems.append("a PAM module path that can't be sent")
             continue
         if count >= MAX_PAM_OWNERS:
             complete, cut = False, "limit"
             break
-        entry = {"path": file, "package": package}
-        if arch:
-            entry["arch"] = arch
-        if file in contested:
-            entry["several"] = True  # more than one package lists it: the owner is a guess
-            sent = [
-                {"package": p, **({"arch": a} if a else {})}
-                for p, a in claims.get(file, ())
-                if OWNER_NAME.match(p) and (a is None or OWNER_NAME.match(a))
-            ]
-            if sent:
-                entry["claims"] = sent
+        named = [(package, arch)] + [c for c in claims.get(file, ()) if c != (package, arch)]
+        # A name dpkg and rpm never make is left out, the others still sent: one
+        # odd name mustn't drop the real owner beside it (#224's review).
+        valid = [
+            (p, a) for p, a in named if OWNER_NAME.match(p) and (a is None or OWNER_NAME.match(a))
+        ]
+        if not valid:
+            entry = {"path": file, "odd_owner": True}
+        else:
+            entry = {"path": file, "package": valid[0][0]}
+            if valid[0][1]:
+                entry["arch"] = valid[0][1]
+            if file in contested or len(valid) < len(named):
+                entry["several"] = True  # more than one package lists it: the owner is a guess
+                entry["claims"] = [
+                    {"package": p, **({"arch": a} if a else {})} for p, a in valid[:MAX_CLAIMS]
+                ]
+                if len(claims.get(file, ())) > MAX_CLAIMS:
+                    entry["claims_cut"] = True
+                if len(valid) < len(named):
+                    entry["odd_claims"] = len(named) - len(valid)
         run.stream.record(module, "pam_module_owner", entry)
         count += 1
     run.stream.record(
@@ -5569,6 +5587,7 @@ def record_pam_owners(run, module, owners, complete, facts, links):
             "complete": bool(complete) and owners is not None,
             "count": count,
             **({"cut": cut} if cut else {}),
+            **({"problems": problems[:5]} if problems else {}),
         },  # fmt: skip
     )
 

@@ -561,6 +561,8 @@ NAMED_ONLY = {
     ("pam.changes", "differs"),
     ("pam.changes", "owner_changed"),
     ("pam.changes", "owners_cut"),
+    ("pam.changes", "owners_unread"),
+    ("pam.changes", "owner_unverified"),
 }
 
 

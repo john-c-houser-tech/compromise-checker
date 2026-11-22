@@ -67,6 +67,9 @@ class Official:
     # The failure was this machine's (no network, out of time, no gpgv, an
     # error), not the package's: worth asking again later, never stored.
     transient: bool = field(default=False, compare=False)
+    # The distribution's signed lists have no such package, or not that
+    # version: a vendor's package, or a name or version the server made up.
+    unlisted: bool = field(default=False, compare=False)
 
     @property
     def found(self) -> bool:
@@ -165,7 +168,12 @@ class Verifier:
             else:
                 return Official(lookup, reason=f"{show(lookup.system)} isn't covered")
         except (deb.PackageError, rpm.PackageError) as exc:
-            missing = Official(lookup, reason=str(exc), transient=getattr(exc, "transient", False))
+            missing = Official(
+                lookup,
+                reason=str(exc),
+                transient=getattr(exc, "transient", False),
+                unlisted=getattr(exc, "unlisted", False) is True,
+            )
             if not missing.transient:
                 self._keep_missing(missing)  # not asked about again for a day
             return missing
@@ -232,7 +240,12 @@ class Verifier:
                 return None
             if time.time() - float(data["at"]) > MISSING_FOR:
                 return None
-            return Official(lookup, reason=str(data["reason"])[:300], cached=True)
+            return Official(
+                lookup,
+                reason=str(data["reason"])[:300],
+                cached=True,
+                unlisted=data.get("unlisted") is True,
+            )
         except (OSError, ValueError, KeyError, TypeError, RecursionError):
             return None
 
@@ -240,7 +253,12 @@ class Verifier:
         path = self._path(official.lookup)
         if path is None:
             return
-        data = {"lookup": asdict(official.lookup), "reason": official.reason, "at": time.time()}
+        data = {
+            "lookup": asdict(official.lookup),
+            "reason": official.reason,
+            "unlisted": official.unlisted,
+            "at": time.time(),
+        }
         try:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if not self._safe_folder():

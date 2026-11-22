@@ -24,7 +24,18 @@ USER_AGENT = f"compromise-checker/{__version__}"
 
 
 class FetchError(Exception):
-    """A download failed (other than "not there")."""
+    """A download failed (other than "not there"). `offline`: this machine
+    couldn't reach the server at all (no route, no name, refused, a socket
+    timing out), as opposed to running out of the checker's own time or a
+    server's answer: only that tells a run the servers are out of reach."""
+
+    offline = False
+
+
+def _offline(message: str) -> FetchError:
+    error = FetchError(message)
+    error.offline = True
+    return error
 
 
 class Fetcher(Protocol):
@@ -48,29 +59,70 @@ class _SameHost(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class RunClock:
+    """The time a whole run's servers may spend waiting on downloads, all
+    together (`verify.seconds_per_run`, #217). Only time inside requests
+    counts: collecting and analysing don't, so a large fleet doesn't use it
+    up by being large."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.used = 0.0
+
+    def left(self) -> float:
+        return self.seconds - self.used
+
+
 class HttpFetcher:
-    """Fetcher over HTTP and HTTPS, with one overall deadline for the run.
+    """Fetcher over HTTP and HTTPS, with one overall deadline for the
+    server it checks, and the run's clock (if any) shared with the others.
 
     Each request runs in a worker thread that is given up on at the
     deadline, so a server that is slow to connect or to send its headers
     can't hold the run past it (the thread itself ends at its socket
     timeout)."""
 
-    def __init__(self, deadline: float = 60.0):
+    def __init__(self, deadline: float = 60.0, run: RunClock | None = None):
         self.deadline = deadline
+        self.run = run
         self.ends: float | None = None  # set at the first download, not before
+        self.started: float | None = None  # the request under way, if one is
         self.opener = urllib.request.build_opener(_SameHost())
 
     def left(self) -> float:
+        now = time.monotonic()
         if self.ends is None:
-            self.ends = time.monotonic() + self.deadline
-        return self.ends - time.monotonic()
+            self.ends = now + self.deadline
+        left = self.ends - now
+        if self.run is not None:
+            under_way = now - self.started if self.started is not None else 0.0
+            left = min(left, self.run.left() - under_way)
+        return left
+
+    def out_of_time(self) -> str:
+        """Which limit ran out, for the reason."""
+        own = (self.ends or time.monotonic()) - time.monotonic()
+        if self.run is not None and self.left() < own:
+            return (
+                f"out of time: this run's {self.run.seconds:g} seconds for package downloads"
+                " (verify.seconds_per_run) were used up"
+            )
+        return "out of time for verification"
 
     def get(self, url: str, limit: int, first: int | None = None) -> bytes | None:
         if not url.lower().startswith(("http://", "https://")):
             raise FetchError(f"not a web address: {url[:200]}")
         if self.left() <= 0:
-            raise FetchError("out of time for verification")
+            raise FetchError(self.out_of_time())
+        self.started = time.monotonic()
+        try:
+            return self._timed(url, limit, first)
+        finally:
+            if self.run is not None:
+                self.run.used += time.monotonic() - self.started
+            self.started = None
+
+    def _timed(self, url: str, limit: int, first: int | None) -> bytes | None:
         outcome: dict = {}
 
         def work():
@@ -83,7 +135,7 @@ class HttpFetcher:
         worker.start()
         worker.join(max(self.left(), 0))
         if worker.is_alive():
-            raise FetchError(f"{url[:200]}: out of time for verification")
+            raise FetchError(f"{url[:200]}: {self.out_of_time()}")
         if "error" in outcome:
             raise outcome["error"]
         return outcome["data"]
@@ -100,7 +152,7 @@ class HttpFetcher:
                 chunks, size = [], 0
                 while size <= limit:
                     if self.left() <= 0:
-                        raise FetchError(f"{url[:200]}: out of time for verification")
+                        raise FetchError(f"{url[:200]}: {self.out_of_time()}")
                     chunk = response.read1(min(65536, limit + 1 - size))
                     if not chunk:
                         break
@@ -114,7 +166,14 @@ class HttpFetcher:
             raise FetchError(f"{url[:200]}: the server answered {exc.code}") from None
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
             reason = getattr(exc, "reason", None) or f"{type(exc).__name__}: {exc}"
-            raise FetchError(f"{url[:200]}: {reason}") from None
+            # URLError is an OSError too: it is the network's only when it
+            # wraps one (a refused redirect is a plain reason).
+            offline = (
+                isinstance(exc.reason, OSError)
+                if isinstance(exc, urllib.error.URLError)
+                else isinstance(exc, OSError)
+            )
+            raise (_offline if offline else FetchError)(f"{url[:200]}: {reason}") from None
         data = b"".join(chunks)
         if first is not None:
             return data[:first]

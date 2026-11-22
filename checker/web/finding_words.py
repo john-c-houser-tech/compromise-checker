@@ -336,8 +336,8 @@ BY_VARIANT = {
         "If it was out of time and this server is slow, check again. Otherwise ask someone to look at it before changing anything on this server.",
     ),
     ("pam.changes", "elsewhere"): (
-        "The part of the system that checks passwords loads a module from a place other than its own module folders, so the checker can't compare it with the distribution's packages. The distribution's own setup never does this.",
-        "Ask who set this up. If no one knows, treat it as serious and get advice before changing anything.",
+        "The part of the system that checks passwords loads a module or reads settings from a place other than its own folders, so the checker can't compare them with the distribution's packages. The distribution's own setup never does this; a module built by hand and installed under /usr/local, or a vendor's installer, sometimes does.",
+        "If you know who installed it, add a whitelist rule naming it and this kind of finding. If no one knows, treat it as serious and get advice before changing anything.",
     ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",

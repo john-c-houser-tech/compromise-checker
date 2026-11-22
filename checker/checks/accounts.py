@@ -851,22 +851,69 @@ def pam_module(line: str) -> str | None:
     return token.rsplit("/", 1)[-1] if token is not None else None
 
 
+def _pam_fields(key: str) -> tuple[str, str, str] | None:
+    """(type, control, the rest) of a PAM line keyed "<file>: <line>", split
+    as Linux-PAM splits it: on spaces, tabs and newlines; a control in
+    brackets ends at its first "]" not escaped, the module may follow at
+    once; /etc/pam.conf has a service first. None for an @include line or
+    one too short."""
+    from checker.snapshot import PAM_SPACE
+
+    path, _, rest = key.partition(": ")
+    rest = rest.strip(" \t\n")
+    if path == "/etc/pam.conf":
+        parts = PAM_SPACE.split(rest, 1)
+        rest = parts[1] if len(parts) == 2 else ""
+    if not rest or rest.startswith("@"):
+        return None
+    parts = PAM_SPACE.split(rest.lstrip("-"), 1)
+    if len(parts) < 2:
+        return None
+    kind, rest = parts[0], parts[1].lstrip(" \t\n")
+    if rest.startswith("["):
+        end = next((i for i in range(1, len(rest)) if rest[i] == "]" and rest[i - 1] != "\\"), None)
+        if end is None:
+            return None
+        return kind, rest[: end + 1], rest[end + 1 :].lstrip(" \t\n")
+    parts = PAM_SPACE.split(rest, 1)
+    return kind, parts[0], parts[1] if len(parts) == 2 else ""
+
+
 def pam_module_token(line: str) -> str | None:
     """The module as the line names it: a name, or a path."""
-    rest = line.split(": ", 1)[-1].strip()
-    if rest.startswith("@"):
+    fields = _pam_fields(line)
+    if fields is None or fields[1].lower() in ("include", "substack"):
         return None
-    tokens = rest.lstrip("-").split()
-    if len(tokens) < 3:
-        return None
-    if tokens[1].startswith("["):  # a bracketed control: [success=1 default=ignore]
-        closing = next((i for i, t in enumerate(tokens) if t.endswith("]")), None)
-        if closing is None or closing + 1 >= len(tokens):
-            return None
-        return tokens[closing + 1]
-    if tokens[1] in ("include", "substack"):
-        return None
-    return tokens[2]
+    module = _first_field(fields[2])
+    return module or None
+
+
+def _first_field(text: str) -> str:
+    from checker.snapshot import PAM_SPACE
+
+    return PAM_SPACE.split(text.strip(" \t\n"), 1)[0] if text.strip(" \t\n") else ""
+
+
+def pam_include_target(line: str) -> str | None:
+    """The file an include, substack or @include line reads, if it does."""
+    _, _, rest = line.partition(": ")
+    rest = rest.strip(" \t\n")
+    if rest.startswith("@include"):
+        return _first_field(rest[len("@include") :]) or None
+    fields = _pam_fields(line)
+    if fields is not None and fields[1].lower() in ("include", "substack"):
+        return _first_field(fields[2]) or None
+    return None
+
+
+def _outside_pam_d(target: str) -> str | None:
+    """Where an include reads from, when that isn't /etc/pam.d (Linux-PAM
+    opens an absolute name as given and puts /etc/pam.d/ before others)."""
+    import posixpath
+
+    where = posixpath.normpath("/etc/pam.d/" + target if not target.startswith("/") else target)
+    where = re.sub("/+", "/", where)
+    return None if where.startswith("/etc/pam.d/") and ".." not in target.split("/") else where
 
 
 def _outside_module_dirs(token: str) -> str | None:
@@ -880,11 +927,12 @@ def _outside_module_dirs(token: str) -> str | None:
 
     if "/" not in token:
         return None
+    if ".." in token.split("/"):
+        return token  # the kernel follows a link before "..": the text can't tell where
     if token.startswith("/"):
-        where = posixpath.normpath(token)
+        where = re.sub("/+", "/", posixpath.normpath(token))
         return None if MODULE_PATH.fullmatch(where) else where
-    where = posixpath.normpath(token)
-    return token if where.startswith("..") else None
+    return None
 
 
 DISTRIBUTIONS = {"ubuntu": "Ubuntu", "rocky": "Rocky Linux", "almalinux": "AlmaLinux"}
@@ -1221,7 +1269,11 @@ UPDATE_TEMPORARY = re.compile(r"(?:\.dpkg-(?:new|tmp|dist|old)|;[0-9a-f]{8})\Z")
 def _modules_elsewhere(context: Context) -> list[Finding]:
     """PAM loading modules the module directories' listing doesn't hold
     (#226), so they are never checked: a line naming a module by a path
-    outside them, and a module directory that leads somewhere else."""
+    outside them, an include of a file outside /etc/pam.d, a module that is
+    a link out of them (medium), and a module directory that leads
+    somewhere else."""
+    from checker.official import MODULE_PATH
+
     found = []
     for key, item in sorted(context.items("pam_rules").items()):
         token = pam_module_token(key)
@@ -1237,6 +1289,50 @@ def _modules_elsewhere(context: Context) -> list[Finding]:
                 f"{key} (loads {where}, which isn't checked)",
                 [f"path:{item.get('path')}", f"module:{where}"],
                 [{"item": ["pam_rules", key]}],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    # An include reading a file outside /etc/pam.d: that file isn't collected either.
+    for key, item in sorted(context.items("pam_rules").items()):
+        target = pam_include_target(key)
+        where = _outside_pam_d(target) if target else None
+        if where is None:
+            continue
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM line includes a file from outside /etc/pam.d",
+                COMPROMISE,
+                "high",
+                f"{key} (reads {where}, which isn't collected)",
+                [f"path:{item.get('path')}"],
+                [{"item": ["pam_rules", key]}],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    for path, item in sorted(context.items("pam").items()):
+        target = item.get("link_target")
+        if (
+            item.get("type") != "l"
+            or not isinstance(target, str)
+            or not MODULE_PATH.fullmatch(path)
+        ):
+            continue
+        import posixpath
+
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+        if MODULE_PATH.fullmatch(resolved) and ".." not in target.split("/"):
+            continue
+        # Some vendors' installers link a module to their own folder: medium.
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM module that is a link out of the module directories",
+                COMPROMISE,
+                "medium",
+                f"{path} -> {target}: the module there isn't checked",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
                 variant="elsewhere",
             )  # fmt: skip
         )

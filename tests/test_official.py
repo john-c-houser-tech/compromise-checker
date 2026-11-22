@@ -1362,8 +1362,14 @@ def test_several_a_mismatch_is_asked_again_when_another_lookup_failed_here():
 
 
 def test_an_unlisted_link_isn_t_reported_as_a_module_no_package_installed():
+    # (#226: a link out of the module directories is its own medium finding.)
     pam = {UNIX: {"sha256": BAD}, OTHER: {"type": "l", "link_target": "/opt/agent/pam.so"}}
-    assert owner_findings(pam, {UNIX: owner()}) == []
+    found = owner_findings(pam, {UNIX: owner()})
+    assert [(f.band, f.title) for f in found] == [
+        ("medium", "A PAM module that is a link out of the module directories")
+    ]
+    inside = {UNIX: {"sha256": BAD}, OTHER: {"type": "l", "link_target": "pam_unix.so"}}
+    assert owner_findings(inside, {UNIX: owner()}) == []
 
 
 def test_owners_cut_needs_a_rule_that_names_it():
@@ -1723,3 +1729,65 @@ def test_snapshot_keeps_module_directories_elsewhere(tmp_path):
     )
     found = snapshot_of_records(records, tmp_path).live["pam_dirs_elsewhere"]
     assert found == {"/usr/lib64/security": "/var/tmp/x"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "auth [default=ignore]/tmp/x.so",  # the module right after "]"
+        "auth [ok]/tmp/x.so foo] pam_permit.so",
+        "auth [a=b\\] pam_unix.so c] /tmp/x.so",  # an escaped "]" doesn't end it
+        "auth required /usr/lib/security/sub/../x.so",  # ".." after a link: can't tell
+        "auth required /usr/lib64/foo/security/x.so",  # not a directory that is listed
+        "@include ../../tmp/c",
+        "auth include /tmp/c",
+        "auth Include /tmp/c",  # control words are compared without case
+        "auth substack ../x",
+    ],
+)
+def test_lines_read_as_linux_pam_reads_them(line):
+    found = [f for f in rules_findings([line]) if f.variant == "elsewhere"]
+    assert [f.band for f in found] == ["high"], line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "auth required //usr/lib64/security/pam_unix.so",
+        "@include common-auth",
+        "auth substack system-auth",
+        "auth [success=1 default=ignore] pam_unix.so nullok",
+        "auth required /lib/security/$ISA/pam_unix.so",
+    ],
+)
+def test_ordinary_lines_raise_nothing(line):
+    assert [f for f in rules_findings([line]) if f.variant == "elsewhere"] == []
+
+
+def test_pam_conf_lines_have_a_service_first():
+    from checker.checks import Context, run_checks
+    from checker.snapshot import Section
+
+    current = snap(pam={UNIX: {"sha256": BAD}}, owners={UNIX: owner()})
+    current.sections["pam_rules"] = Section(
+        {"/etc/pam.conf: sshd auth required /tmp/x.so": {"path": "/etc/pam.conf"},
+         "/etc/pam.conf: sshd auth required pam_unix.so": {"path": "/etc/pam.conf"}}
+    )  # fmt: skip
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1")
+    found = [f for f in run_checks(context)[0] if f.variant == "elsewhere"]
+    assert [f.summary.split(" (")[0] for f in found] == [
+        "/etc/pam.conf: sshd auth required /tmp/x.so"
+    ]
+
+
+def test_continuations_as_linux_pam_joins_them():
+    from checker.snapshot import pam_lines
+
+    # A "#" ends the logical line before its backslash: the next line is a line of its own.
+    assert pam_lines(["auth required pam_unix.so \\ # c", "auth required /tmp/x.so"]) == [
+        "auth required pam_unix.so \\",
+        "auth required /tmp/x.so",
+    ]
+    # A blank or comment-only line inside a continuation is skipped, the joining goes on.
+    assert pam_lines(["auth required \\", "", "# note", "/tmp/x.so"]) == ["auth required /tmp/x.so"]
+    assert pam_lines(["auth\trequired   pam_unix.so"]) == ["auth required pam_unix.so"]

@@ -51,7 +51,7 @@ MISMATCHES = ("differs", "absent", "link")
 SYSTEMS = {"ubuntu": "dpkg", "rocky": "rpm", "almalinux": "rpm", "rhel": "rpm"}
 # The PAM module directories the collector walks (PAM_MODULE_DIRS), one or two
 # levels down: /etc/security/ (configuration) is not one of them.
-MODULE_PATH = re.compile(r"/(?:usr/)?lib(?:64)?/(?:[^/]+/)?security/[^/]+(?:/[^/]+)?")
+MODULE_PATH = re.compile(r"/(?:usr/)?(?:lib64|lib(?:/[^/]+)?)/security/[^/]+(?:/[^/]+)?")
 
 
 @dataclass

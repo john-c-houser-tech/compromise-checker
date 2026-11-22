@@ -3389,7 +3389,7 @@ def module_ssh(run):
 
 # Where a PAM module directory is once links are followed: /usr/lib64/security,
 # /usr/lib/x86_64-linux-gnu/security (or /lib... on a system without merged /usr).
-PAM_DIR = re.compile(r"/(?:usr/)?lib(?:64)?(?:/[^/]+)?/security")
+PAM_DIR = re.compile(r"/(?:usr/)?(?:lib64|lib(?:/[^/]+)?)/security")
 PAM_MODULE_DIRS = (
     "/usr/lib64/security",
     "/usr/lib/security",

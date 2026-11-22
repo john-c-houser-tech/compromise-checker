@@ -878,22 +878,39 @@ def sudoers_lines(lines: list[str]) -> list[str]:
     return out
 
 
+# The characters Linux-PAM splits a configuration line on (_pam_StrTok).
+PAM_SPACE = re.compile(r"[ \t\n]+")
+
+
 def pam_lines(lines: list[str]) -> list[str]:
-    """PAM configuration lines as Linux-PAM reads them: a `#` anywhere
-    starts a comment, continuations joined, spaces collapsed."""
+    """PAM configuration lines as Linux-PAM reads them (_pam_assemble_line):
+    a blank or comment-only line is skipped, even inside a continuation; a
+    `#` ends the logical line there, before any backslash; a trailing
+    backslash joins the next line; spaces, tabs and newlines collapsed."""
     out: list[str] = []
     pending = ""
+
+    def emit(text: str) -> None:
+        text = PAM_SPACE.sub(" ", text).strip(" ")
+        if text:
+            out.append(text)
+
     for raw in lines:
-        line = raw.split("#", 1)[0].rstrip()
+        line = raw.lstrip(" \t\n")
+        if not line or line.startswith("#"):
+            continue  # skipped: a continuation goes on past it
+        if "#" in line:
+            emit(pending + line.split("#", 1)[0])
+            pending = ""
+            continue
+        line = line.rstrip(" \t\n")
         if line.endswith("\\"):
             pending += line[:-1] + " "
             continue
-        line = (pending + line).strip()
+        emit(pending + line)
         pending = ""
-        if line:
-            out.append(" ".join(line.split()))
-    if pending.strip():
-        out.append(" ".join(pending.split()))
+    if pending:
+        emit(pending)
     return out
 
 

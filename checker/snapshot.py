@@ -30,6 +30,7 @@ SNAPSHOT_VERSION = 18
 # inode and times; 17: PAM modules' owners (#189); 18: packages listed twice marked
 
 MAX_PAM_OWNERS = 2000  # the collector sends at most this many (#189)
+MAX_CLAIMS = 8  # packages listing one PAM module path, when several do
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -877,22 +878,39 @@ def sudoers_lines(lines: list[str]) -> list[str]:
     return out
 
 
+# The characters Linux-PAM splits a configuration line on (_pam_StrTok).
+PAM_SPACE = re.compile(r"[ \t\n]+")
+
+
 def pam_lines(lines: list[str]) -> list[str]:
-    """PAM configuration lines as Linux-PAM reads them: a `#` anywhere
-    starts a comment, continuations joined, spaces collapsed."""
+    """PAM configuration lines as Linux-PAM reads them (_pam_assemble_line):
+    a blank or comment-only line is skipped, even inside a continuation; a
+    `#` ends the logical line there, before any backslash; a trailing
+    backslash joins the next line; spaces, tabs and newlines collapsed."""
     out: list[str] = []
     pending = ""
+
+    def emit(text: str) -> None:
+        text = PAM_SPACE.sub(" ", text).strip(" ")
+        if text:
+            out.append(text)
+
     for raw in lines:
-        line = raw.split("#", 1)[0].rstrip()
+        line = raw.lstrip(" \t\n")
+        if not line or line.startswith("#"):
+            continue  # skipped: a continuation goes on past it
+        if "#" in line:
+            emit(pending + line.split("#", 1)[0])
+            pending = ""
+            continue
+        line = line.rstrip(" \t\n")
         if line.endswith("\\"):
             pending += line[:-1] + " "
             continue
-        line = (pending + line).strip()
+        emit(pending + line)
         pending = ""
-        if line:
-            out.append(" ".join(line.split()))
-    if pending.strip():
-        out.append(" ".join(pending.split()))
+    if pending:
+        emit(pending)
     return out
 
 
@@ -1269,6 +1287,12 @@ class SnapshotBuilder:
             if data.get("complete") is False:
                 self._module_gap("package_verify", "not every package's files were checked")
 
+    def _on_pam(self, name: str, data: dict[str, Any]) -> None:
+        if name == "module_dir_elsewhere" and isinstance(data.get("path"), str):
+            found = self.live.setdefault("pam_dirs_elsewhere", {})
+            if len(found) < 20:
+                found[data["path"]] = str(data.get("target") or "")[:4096]
+
     def _on_system_files(self, name: str, data: dict[str, Any]) -> None:
         if name == "privileged_file" and data.get("path"):
             self.section("privileged_files").items[data["path"]] = _meta(data)
@@ -1283,6 +1307,18 @@ class SnapshotBuilder:
             owners = self.live.setdefault("pam_owners", {"complete": False, "owners": {}})
             listed = owners["owners"]
             if (
+                data.get("odd_owner") is True
+                and len(listed) < MAX_PAM_OWNERS
+                and data["path"] not in listed
+            ):
+                # Listed only under names dpkg and rpm never make (collector 0.1.5).
+                listed[data["path"]] = {
+                    "package": None,
+                    "arch": None,
+                    "several": False,
+                    "odd": True,
+                }
+            elif (
                 isinstance(data.get("package"), str)
                 and len(listed) < MAX_PAM_OWNERS
                 and data["path"] not in listed
@@ -1292,6 +1328,18 @@ class SnapshotBuilder:
                     "arch": data.get("arch") if isinstance(data.get("arch"), str) else None,
                     "several": data.get("several") is True,
                 }
+                # Every package that lists it, when several do (collector 0.1.5).
+                claims = [
+                    {"package": c["package"],
+                     "arch": c.get("arch") if isinstance(c.get("arch"), str) else None}
+                    for c in (data.get("claims") if isinstance(data.get("claims"), list) else [])
+                    [:MAX_CLAIMS]
+                    if isinstance(c, dict) and isinstance(c.get("package"), str)
+                ]  # fmt: skip
+                if claims and listed[data["path"]]["several"]:
+                    listed[data["path"]]["claims"] = claims
+                    if data.get("claims_cut") is True:
+                        listed[data["path"]]["claims_cut"] = True
             else:
                 owners["dropped"] = owners.get("dropped", 0) + 1
         elif name == "pam_owners_summary":
@@ -1302,6 +1350,11 @@ class SnapshotBuilder:
                 and data.get("count") == len(owners["owners"])
                 and not owners.get("dropped")
             )
+            if data.get("cut") == "limit":
+                owners["cut"] = "limit"  # more PAM module files than any system has
+            problems = data.get("problems")
+            if isinstance(problems, list):
+                owners["problems"] = [str(p)[:200] for p in problems[:5]]
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 

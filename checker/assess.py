@@ -278,10 +278,20 @@ def official_results(
         return None
     previous_results = None
     if previous_id and previous_id != baseline_id:
+        # The newest versions seen count only since the baseline, so the
+        # baseline's own results (what it had seen before) don't.
         previous_results = load_official(store, store.bundle(previous_id), identity)
+    # What earlier checks had found, from the last that stored results (one
+    # analyzed with verify off, or with nothing to check, stored none).
+    reported = None
+    for earlier in reversed(usable_bundles(store, row["host"])):
+        if earlier["started_at"] < row["started_at"]:
+            reported = load_official(store, earlier, identity)
+            if reported is not None:
+                break
     results = verify_pam(
         snapshot, baseline_snapshot, since_baseline, verifier, baseline_id,
-        previous_snapshot, previous_results,
+        previous_snapshot, previous_results, reported,
     )  # fmt: skip
     store_official(store, row, recipients, results)
     return results

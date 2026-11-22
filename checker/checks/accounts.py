@@ -847,20 +847,92 @@ def sshd_config(context: Context) -> list[Finding]:
 
 def pam_module(line: str) -> str | None:
     """The module a PAM line loads (`pam_exec.so`), if it loads one."""
-    rest = line.split(": ", 1)[-1].strip()
-    if rest.startswith("@"):
+    token = pam_module_token(line)
+    return token.rsplit("/", 1)[-1] if token is not None else None
+
+
+def _pam_fields(key: str) -> tuple[str, str, str] | None:
+    """(type, control, the rest) of a PAM line keyed "<file>: <line>", split
+    as Linux-PAM splits it: on spaces, tabs and newlines; a control in
+    brackets ends at its first "]" not escaped, the module may follow at
+    once; /etc/pam.conf has a service first. None for an @include line or
+    one too short."""
+    from checker.snapshot import PAM_SPACE
+
+    path, _, rest = key.partition(": ")
+    rest = rest.strip(" \t\n")
+    if path == "/etc/pam.conf":
+        parts = PAM_SPACE.split(rest, 1)
+        rest = parts[1] if len(parts) == 2 else ""
+    if not rest or rest.startswith("@"):
         return None
-    tokens = rest.lstrip("-").split()
-    if len(tokens) < 3:
+    parts = PAM_SPACE.split(rest.lstrip("-"), 1)
+    if len(parts) < 2:
         return None
-    if tokens[1].startswith("["):  # a bracketed control: [success=1 default=ignore]
-        closing = next((i for i, t in enumerate(tokens) if t.endswith("]")), None)
-        if closing is None or closing + 1 >= len(tokens):
+    kind, rest = parts[0], parts[1].lstrip(" \t\n")
+    if rest.startswith("["):
+        end = next((i for i in range(1, len(rest)) if rest[i] == "]" and rest[i - 1] != "\\"), None)
+        if end is None:
             return None
-        return tokens[closing + 1].rsplit("/", 1)[-1]
-    if tokens[1] in ("include", "substack"):
+        return kind, rest[: end + 1], rest[end + 1 :].lstrip(" \t\n")
+    parts = PAM_SPACE.split(rest, 1)
+    return kind, parts[0], parts[1] if len(parts) == 2 else ""
+
+
+def pam_module_token(line: str) -> str | None:
+    """The module as the line names it: a name, or a path."""
+    fields = _pam_fields(line)
+    if fields is None or fields[1].lower() in ("include", "substack"):
         return None
-    return tokens[2].rsplit("/", 1)[-1]
+    module = _first_field(fields[2])
+    return module or None
+
+
+def _first_field(text: str) -> str:
+    from checker.snapshot import PAM_SPACE
+
+    return PAM_SPACE.split(text.strip(" \t\n"), 1)[0] if text.strip(" \t\n") else ""
+
+
+def pam_include_target(line: str) -> str | None:
+    """The file an include, substack or @include line reads, if it does."""
+    _, _, rest = line.partition(": ")
+    rest = rest.strip(" \t\n")
+    if rest.startswith("@include"):
+        return _first_field(rest[len("@include") :]) or None
+    fields = _pam_fields(line)
+    if fields is not None and fields[1].lower() in ("include", "substack"):
+        return _first_field(fields[2]) or None
+    return None
+
+
+def _outside_pam_d(target: str) -> str | None:
+    """Where an include reads from, when that isn't /etc/pam.d (Linux-PAM
+    opens an absolute name as given and puts /etc/pam.d/ before others)."""
+    import posixpath
+
+    where = posixpath.normpath("/etc/pam.d/" + target if not target.startswith("/") else target)
+    where = re.sub("/+", "/", where)
+    return None if where.startswith("/etc/pam.d/") and ".." not in target.split("/") else where
+
+
+def _outside_module_dirs(token: str) -> str | None:
+    """Where a module the line names by path is, when that isn't inside a
+    PAM module directory (Linux-PAM puts its own directory before a
+    relative name only, so `/tmp/x.so` and `../../../tmp/x.so` load from
+    anywhere), else None."""
+    import posixpath
+
+    from checker.official import MODULE_PATH
+
+    if "/" not in token:
+        return None
+    if ".." in token.split("/"):
+        return token  # the kernel follows a link before "..": the text can't tell where
+    if token.startswith("/"):
+        where = re.sub("/+", "/", posixpath.normpath(token))
+        return None if MODULE_PATH.fullmatch(where) else where
+    return None
 
 
 DISTRIBUTIONS = {"ubuntu": "Ubuntu", "rocky": "Rocky Linux", "almalinux": "AlmaLinux"}
@@ -948,6 +1020,8 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
     outcome = (result or {}).get("outcome")
     package = f"{(result or {}).get('package')} {(result or {}).get('version')}"
     unsafe = _unsafe(modules.get(path) or {})
+    if _held(result):  # (its mode changed only, or the file came back after a check between)
+        return _held_finding(context, path, result, ref, unsafe)
     if outcome == "matched" and not unsafe:
         older = result.get("older_than_baseline")
         older_seen = result.get("older_than_seen")
@@ -1033,6 +1107,8 @@ def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list
             continue
         package = f"{result.get('package')} {result.get('version')}"
         says = WHAT_THE_PACKAGE_SAYS[outcome].format(package=package)
+        if isinstance(result.get("owner_changed"), dict):
+            says += f" ({_owner_change_words(result['owner_changed'])}; checked as the baseline's)"
         if context.since_baseline is not None:
             when = "unchanged since the baseline: it was already so when the baseline was taken"
         elif context.no_baseline == "no baseline yet":
@@ -1049,6 +1125,450 @@ def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list
                 [f"path:{path}"],
                 [{"item": ["pam", path]}],
                 variant="differs",
+            )  # fmt: skip
+        )
+    return found
+
+
+def _owner_words(owner: Any) -> str:
+    if owner == "several":
+        return "more than one package"
+    if not isinstance(owner, dict):
+        return "no package"
+    arch = owner.get("arch")
+    return f"{owner.get('package')}{':' + arch if arch else ''}"
+
+
+def _owner_change_words(change: dict) -> str:
+    return (
+        f"the package records name {_owner_words(change.get('now'))} as its owner,"
+        f" not {_owner_words(change.get('baseline'))} as at the baseline"
+    )
+
+
+def _held(result: Any) -> bool:
+    """A result #217 reports in its own right: an owner change, or a file
+    an earlier check found wasn't its package's that this one doesn't show
+    again (a mismatch now is `differs` as ever)."""
+    return (
+        isinstance(result, dict)
+        and result.get("outcome") not in WHAT_THE_PACKAGE_SAYS
+        and (isinstance(result.get("owner_changed"), dict) or result.get("reported_before") is True)
+    )
+
+
+def _held_finding(context: Context, path: str, result: dict, ref: list, unsafe=None) -> Finding:
+    """An owner change is held to the baseline's owner: medium, high once
+    the file was reported (or when it is dangerous whatever its content); a
+    file reported before and not shown again, high (`differs`), until a
+    check finds it is its package's own."""
+    distribution = _distribution(context)
+    change = result.get("owner_changed") if isinstance(result.get("owner_changed"), dict) else None
+    before = result.get("reported_before") is True
+    outcome = result.get("outcome")
+    whose = "the baseline's owner" if change else "its package"
+    if outcome == "matched":
+        checked = f"it is the file in {whose} {result.get('package')} {result.get('version')}"
+    elif outcome == "ghost":
+        checked = f"{whose} lists it as a file made on the server"
+    else:
+        checked = f"not checked against {whose}: {result.get('reason')}"
+    parts = [_owner_change_words(change)] if change else []
+    parts.append(checked)
+    if before:
+        parts.append(f"an earlier check found it wasn't the file in {distribution}'s package")
+    if unsafe:
+        parts.append(f"it is {unsafe}")
+    if change:
+        title, variant = (
+            "A PAM module's owning package changed, its content didn't",
+            "owner_changed",
+        )
+        new = result.get("new_owner_change") is not False
+    else:
+        title = f"A PAM module found to differ from {distribution}'s package, not checked again"
+        variant, new = "differs", False
+    return Finding(
+        "pam.changes",
+        title,
+        COMPROMISE,
+        "high" if before or unsafe else "medium",
+        f"{path}: " + "; ".join(parts),
+        [f"path:{path}"],
+        ref,
+        new=new or result.get("no_longer_shown") is True,
+        variant=variant,
+    )
+
+
+def _owner_changes(context: Context, reported: set[str]) -> list[Finding]:
+    """Unchanged modules #217 reports (`_held`): how root would hide a module
+    swapped before the baseline. Changed ones are reported by the change's
+    finding, which says the same (`_pam_module_finding`)."""
+    modules = context.items("pam")
+    found = []
+    for path, result in sorted(((context.official or {}).get("files") or {}).items()):
+        if not isinstance(result, dict) or result.get("how") != "unchanged" or path in reported:
+            continue
+        if _held(result) and official_result(context, path, modules) is not None:
+            found.append(_held_finding(context, path, result, [{"item": ["pam", path]}]))
+    return found
+
+
+# What the collector says when the owner list is incomplete for reasons honest
+# servers have too (collector.OUT_OF_TIME, collector.NO_PACKAGE_RECORDS).
+HONEST_GAPS = (
+    "the package records couldn't be read in the time allowed",
+    "no dpkg or rpm records were found",
+)
+PACKAGES_CUT = "the package list wasn't collected whole"  # checker.official's reason
+
+
+def _packages_unread(context: Context) -> list[Finding]:
+    """Modules left unchecked because the package list wasn't collected
+    whole (#224): low when the time allowed ran out, else medium (a list
+    padded past its limit would leave every module so)."""
+    files = ((context.official or {}).get("files") or {}).values()
+    count = sum(1 for r in files if isinstance(r, dict) and r.get("reason") == PACKAGES_CUT)
+    if not count:
+        return []
+
+    def gaps_of(snapshot) -> list[str]:
+        section = snapshot.sections.get("packages") if snapshot is not None else None
+        return [str(g) for g in (section.gaps if section is not None else [])]
+
+    gaps = gaps_of(context.snapshot)
+    # Low only for a timeout the baseline had too (root can bring one on).
+    earlier = gaps_of(context.baseline_snapshot)
+    timed_out = (
+        bool(gaps)
+        and all("time" in g for g in gaps)
+        and any("time" in g for g in earlier)
+        and context.baseline_snapshot is not context.snapshot
+    )
+    return [
+        Finding(
+            "pam.changes",
+            "The server's package list wasn't collected whole, so PAM modules weren't checked",
+            COMPROMISE,
+            "low" if timed_out else "medium",
+            f"{count} PAM module file(s) not checked: "
+            + ("; ".join(gaps[:3]) or "no reason given"),
+            [],
+            [],
+            variant="packages_unread",
+        )
+    ]
+
+
+# A package manager's file mid-update (dpkg's .dpkg-new, rpm's ";1a2b3c4d"):
+# no package lists it, and PAM loads it only if a line names it.
+UPDATE_TEMPORARY = re.compile(r"(?:\.dpkg-(?:new|tmp|dist|old)|;[0-9a-f]{8})\Z")
+
+
+def _modules_elsewhere(context: Context) -> list[Finding]:
+    """PAM loading modules the module directories' listing doesn't hold
+    (#226), so they are never checked: a line naming a module by a path
+    outside them, an include of a file outside /etc/pam.d, a module that is
+    a link out of them (medium), and a module directory that leads
+    somewhere else."""
+    from checker.official import MODULE_PATH
+
+    found = []
+    for key, item in sorted(context.items("pam_rules").items()):
+        token = pam_module_token(key)
+        where = _outside_module_dirs(token) if token else None
+        if where is None:
+            continue
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM line loads a module from outside the module directories",
+                COMPROMISE,
+                "high",
+                f"{key} (loads {where}, which isn't checked)",
+                [f"path:{item.get('path')}", f"module:{where}"],
+                [{"item": ["pam_rules", key]}],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    # An include reading a file outside /etc/pam.d: that file isn't collected either.
+    for key, item in sorted(context.items("pam_rules").items()):
+        target = pam_include_target(key)
+        where = _outside_pam_d(target) if target else None
+        if where is None:
+            continue
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM line includes a file from outside /etc/pam.d",
+                COMPROMISE,
+                "high",
+                f"{key} (reads {where}, which isn't collected)",
+                [f"path:{item.get('path')}"],
+                [{"item": ["pam_rules", key]}],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    for path, item in sorted(context.items("pam").items()):
+        target = item.get("link_target")
+        if (
+            item.get("type") != "l"
+            or not isinstance(target, str)
+            or not MODULE_PATH.fullmatch(path)
+        ):
+            continue
+        import posixpath
+
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+        if MODULE_PATH.fullmatch(resolved) and ".." not in target.split("/"):
+            continue
+        # Some vendors' installers link a module to their own folder: medium.
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM module that is a link out of the module directories",
+                COMPROMISE,
+                "medium",
+                f"{path} -> {target}: the module there isn't checked",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    elsewhere = context.snapshot.live.get("pam_dirs_elsewhere")
+    for directory, target in sorted((elsewhere if isinstance(elsewhere, dict) else {}).items()):
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM module directory leads somewhere else",
+                COMPROMISE,
+                "high",
+                f"{directory} -> {target}: the modules there aren't checked",
+                [f"path:{directory}"],
+                [],
+                variant="elsewhere",
+            )  # fmt: skip
+        )
+    return found
+
+
+def _unhashed_modules(context: Context, reported: set[str]) -> list[Finding]:
+    """Files in a PAM module directory that couldn't be checked against a
+    package, said in their own right: a regular file the collector didn't
+    hash (larger than its limit, refused, unreadable; distribution modules
+    are far below the limit: high, out of time only medium), a device file
+    there (one can be mapped like a module: high), and a directory listing
+    cut short or not entered all the way down (medium)."""
+    from checker.official import MODULE_PATH
+
+    found = []
+    section = context.snapshot.sections.get("pam")
+    for gap in section.gaps if section is not None else []:
+        if str(gap).startswith("walk of "):
+            found.append(
+                Finding(
+                    "pam.changes",
+                    "A PAM module directory wasn't listed whole",
+                    COMPROMISE,
+                    "medium",
+                    str(gap),
+                    [],
+                    [],
+                    variant="unhashed",
+                )  # fmt: skip
+            )
+    for path, item in sorted(context.items("pam").items()):
+        if path in reported or not MODULE_PATH.fullmatch(path):
+            continue
+        if item.get("type") in ("b", "c"):
+            found.append(
+                Finding(
+                    "pam.changes",
+                    "A device file in a PAM module directory",
+                    COMPROMISE,
+                    "high",
+                    f"{path}: device {item.get('device')}",
+                    [f"path:{path}"],
+                    [{"item": ["pam", path]}],
+                    variant="unhashed",
+                )  # fmt: skip
+            )
+            continue
+        if item.get("type") != "-" or item.get("sha256"):
+            continue
+        why = str(item.get("hash_skipped") or "no hash was sent")
+        found.append(
+            Finding(
+                "pam.changes",
+                "A file in a PAM module directory that couldn't be checked",
+                COMPROMISE,
+                "medium" if why == "time limit" else "high",
+                f"{path}: {why}" + (f" ({item['size']} bytes)" if item.get("size") else ""),
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+                variant="unhashed",
+            )
+        )
+    return found
+
+
+def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
+    """What the server's owner records leave out or can't vouch for:
+    - a list cut at its limit, which no real system reaches (a few hundred
+      PAM module files): high, since the modules past it can't be checked;
+    - a list left incomplete by records that couldn't be read: medium;
+    - a PAM module no package lists, in a complete owner list, or listed only
+      under names dpkg and rpm never make: high, even when the scan for
+      unowned files didn't send it (its own limit can be filled);
+    - an unchanged module whose package isn't installed once, or isn't in
+      the distribution's signed lists (a vendor's package, or a made-up one):
+      medium (`owner_unverified`), high when more packages list it than the
+      collector sends."""
+    from checker.official import MODULE_PATH
+
+    owners = context.snapshot.live.get("pam_owners")
+    if not isinstance(owners, dict):
+        return []
+    distribution = _distribution(context)
+    found = []
+    if owners.get("cut") == "limit":
+        found.append(
+            Finding(
+                "pam.changes",
+                "More PAM module files than any system has: not all their owners were recorded",
+                COMPROMISE,
+                "high",
+                f"{len(owners.get('owners') or {})} owner records sent, the collector's limit",
+                [],
+                [],
+                variant="owners_cut",
+            )  # fmt: skip
+        )
+    elif owners.get("complete") is not True:
+        # (Out of time, a list unreadable, a record dropped: the owner-less
+        # check below can't run, so this is said in its own right. Out of
+        # time, or no package manager at all, happens on honest servers: low.)
+        problems = [str(p) for p in owners.get("problems") or []]
+        # Low only when the baseline had the same gap: root can bring on a
+        # timeout by padding the records, so one that is new stays medium.
+        before = (
+            (context.baseline_snapshot.live.get("pam_owners") or {}).get("problems") or []
+            if context.baseline_snapshot is not None
+            else []
+        )
+        honest = (
+            bool(problems)
+            and all(p in HONEST_GAPS for p in problems)
+            and set(problems) <= {str(p) for p in before}
+        )
+        found.append(
+            Finding(
+                "pam.changes",
+                "The server's package records couldn't all be read",
+                COMPROMISE,
+                "low" if honest else "medium",
+                "; ".join(problems)
+                or "the owner list is incomplete, and the collector didn't say why",
+                [],
+                [],
+                variant="owners_unread",
+            )  # fmt: skip
+        )
+    listed = owners.get("owners") or {}
+    complete = owners.get("complete") is True
+    loaded = {pam_module(key) for key in context.items("pam_rules")}
+    unowned = context.items("unowned_executables")
+    for path, item in sorted(context.items("pam").items()):
+        # Any name: PAM loads a module by its path, whatever it ends in.
+        if path in unowned:
+            continue
+        # Regular files: the scan for unowned files looks at those only, so a
+        # link (an agent's installer may make one) isn't reported this way.
+        if not MODULE_PATH.fullmatch(path) or not item.get("sha256") or item.get("type") == "l":
+            continue
+        record = listed.get(path)
+        # Softer only while no PAM line loads it: a line can name any file.
+        if (
+            UPDATE_TEMPORARY.search(path)
+            and record is None
+            and complete
+            and path.rsplit("/", 1)[-1] not in loaded
+        ):
+            found.append(
+                Finding(
+                    "pam.changes",
+                    "A package manager's temporary file in a PAM module directory",
+                    COMPROMISE,
+                    "medium",
+                    f"{path}: no package lists it (an update was running, or a file named so)",
+                    [f"path:{path}"],
+                    [{"item": ["pam", path]}],
+                )  # fmt: skip
+            )
+            continue
+        if isinstance(record, dict) and record.get("odd"):
+            why = "its package records name it only with names dpkg and rpm never make"
+        elif record is None and complete:
+            why = "no package lists it"
+        else:
+            continue
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM module that no package installed",
+                COMPROMISE,
+                "high",
+                f"{path}: {why}",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+            )  # fmt: skip
+        )
+    modules = context.items("pam")
+    groups: dict[tuple, list[str]] = {}
+    for path, result in sorted(((context.official or {}).get("files") or {}).items()):
+        if (
+            not isinstance(result, dict)
+            or result.get("how") != "unchanged"
+            or path in reported
+            or result.get("unverified") not in ("package", "version")
+            or _held(result)
+            or result.get("outcome") != "not_checked"
+            or official_result(context, path, modules) is None
+        ):
+            continue
+        key = (
+            result["unverified"],
+            str(result.get("package") or "several packages"),
+            str(result.get("version") or ""),
+            str(result.get("reason") or "not checked"),
+            result.get("claims_cut") is True,
+        )
+        groups.setdefault(key, []).append(path)
+    # One finding per package: one package ships many modules.
+    for (kind, package, version, why, cut), paths in sorted(groups.items()):
+        if cut:
+            why += "; more packages list it than the collector sends"
+        shown = ", ".join(paths[:5]) + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
+        if kind == "package":
+            title = (
+                f"PAM modules whose package isn't one of {distribution}'s signed packages,"
+                " or isn't installed"
+            )
+            band, variant = ("high" if cut else "medium"), "owner_unverified"
+        else:
+            title = f"PAM modules from {_a(distribution)} package version that couldn't be checked"
+            band, variant = "low", "version_unverified"
+        found.append(
+            Finding(
+                "pam.changes",
+                title,
+                COMPROMISE,
+                band,
+                f"{package} {version}".strip() + f": {why}: {len(paths)} file(s): {shown}",
+                [f"path:{p}" for p in paths],
+                [{"item": ["pam", p]} for p in paths],
+                variant=variant,
             )  # fmt: skip
         )
     return found
@@ -1088,6 +1608,14 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "new_package",
         "version_unknown",
         "differs",
+        "owner_changed",
+        "owners_cut",
+        "owners_unread",
+        "owner_unverified",
+        "version_unverified",
+        "packages_unread",
+        "unhashed",
+        "elsewhere",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1159,8 +1687,14 @@ def pam_changes(context: Context) -> list[Finding]:
         if explained:
             findings.append(_pam_modules_updated(context, explained))
     findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
+    findings += _owner_changes(context, reported if diff is not None else set())
+    findings += _pam_owner_records(context, reported if diff is not None else set())
+    findings += _packages_unread(context)
+    findings += _unhashed_modules(context, reported if diff is not None else set())
+    findings += _modules_elsewhere(context)
     for path in context.items("unowned_executables"):
-        if "/security/" in path and path.endswith(".so"):
+        # Any name: PAM loads a module by its path.
+        if "/security/" in path and not UPDATE_TEMPORARY.search(path):
             findings.append(
                 Finding(
                     "pam.changes",

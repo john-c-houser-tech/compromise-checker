@@ -28,12 +28,30 @@ from checker.verify import Lookup, Verifier, package_paths
 from checker.verify import compare as compare_file
 from checker.verify.words import show
 
-OFFICIAL_VERSION = 3  # 2: links checked by their target; 3: every module, not only changed
+# 2: links checked by their target; 3: every module, not only changed; 4: an unchanged
+# module whose owner changed is held to the baseline's owner (#217); 5: a module several
+# packages list is checked against each of them; 6: why a lookup found nothing (#224)
+OFFICIAL_VERSION = 6
 CHANGED_FIELDS = {"sha256", "content_sha256", "size", "inode", "link_target"}
+# A package name, version or architecture as dpkg and rpm make them.
+LOOKUP_FIELD = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_~:-]{0,127}")
+# The machine's own architectures by uname, and 32-bit ones beside them in
+# their own directories (multilib): an architecture the checker doesn't
+# cover is then the whole server's, or an honest extra, not a sign.
+NATIVE = {
+    "x86_64": ("amd64", "x86_64"),
+    "aarch64": ("arm64", "aarch64"),
+    "ppc64le": ("ppc64el", "ppc64le"),
+    "s390x": ("s390x",),
+    "riscv64": ("riscv64",),
+}
+MULTILIB = re.compile(r"/(?:usr/)?lib/(?:i386-linux-gnu/)?security/")
+# Outcomes where the signed package contradicts the server's file.
+MISMATCHES = ("differs", "absent", "link")
 SYSTEMS = {"ubuntu": "dpkg", "rocky": "rpm", "almalinux": "rpm", "rhel": "rpm"}
 # The PAM module directories the collector walks (PAM_MODULE_DIRS), one or two
 # levels down: /etc/security/ (configuration) is not one of them.
-MODULE_PATH = re.compile(r"/(?:usr/)?lib(?:64)?/(?:[^/]+/)?security/[^/]+(?:/[^/]+)?")
+MODULE_PATH = re.compile(r"/(?:usr/)?(?:lib64|lib(?:/[^/]+)?)/security/[^/]+(?:/[^/]+)?")
 
 
 @dataclass
@@ -104,6 +122,7 @@ def verify_pam(
     baseline_id: str | None,
     previous: Snapshot | None = None,
     previous_results: dict[str, Any] | None = None,
+    reported: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """{"version", "baseline_id", "checked_at", "files": {path: result}}:
     each result has an "outcome" (matched, differs, absent, link, ghost or
@@ -119,6 +138,13 @@ def verify_pam(
             asked[lookup] = verifier.package(lookup)
         return asked[lookup]
 
+    # The last stored results (the baseline's own too), for what earlier
+    # checks had found: each file (path and hash) once found not to be its
+    # package's, kept from check to check whatever comes between (#217's
+    # reviews), until that very file matches its package.
+    last = reported if reported is not None else previous_results
+    earlier_files = (last or {}).get("files") or {}
+    mismatched = _mismatched(last)
     for target in targets(snapshot, since_baseline, every=True):
         try:
             files[target.path] = _check(target, snapshot, baseline, package, seen, previous)
@@ -130,12 +156,75 @@ def verify_pam(
                 "sha256": target.sha256,
                 **({"link_target": target.link_target} if target.link_target else {}),
             }
+        _mark_reported(files[target.path], target, earlier_files.get(target.path), mismatched)
     return {
         "version": OFFICIAL_VERSION,
         "baseline_id": baseline_id,
         "checked_at": datetime.now(UTC).isoformat(),
         "files": files,
+        "mismatched": {path: sorted(keys) for path, keys in sorted(mismatched.items()) if keys},
     }
+
+
+MAX_MISMATCHED_PER_PATH = 20  # the server picks the hashes: kept bounded
+
+
+def _key(sha256: Any, link_target: Any) -> str | None:
+    if isinstance(sha256, str) and sha256:
+        return sha256
+    return f"link:{link_target}" if isinstance(link_target, str) and link_target else None
+
+
+def _mismatched(last: dict[str, Any] | None) -> dict[str, set[str]]:
+    """{path: the files (hash, or "link:" and target) found there not to be
+    their package's}: those the last results carried, and their own."""
+    found: dict[str, set[str]] = {}
+    carried = (last or {}).get("mismatched")
+    for path, keys in carried.items() if isinstance(carried, dict) else ():
+        if isinstance(path, str) and isinstance(keys, list):
+            found[path] = {k for k in keys if isinstance(k, str)}
+    for path, result in ((last or {}).get("files") or {}).items():
+        if isinstance(result, dict) and result.get("outcome") in MISMATCHES:
+            key = _key(result.get("sha256"), result.get("link_target"))
+            if isinstance(path, str) and key:
+                found.setdefault(path, set()).add(key)
+    return found
+
+
+def _mark_reported(
+    result: dict[str, Any], target: Target, earlier: Any, mismatched: dict[str, set[str]]
+) -> None:
+    """Marks a module whose very file an earlier check found wasn't its
+    package's, when this check doesn't show it again: whatever the server
+    changes in its records (owner, package list, version, release) to make
+    it "not checked", or however it hides it for a check between, it stays
+    reported. A match for that file clears it; a mismatch now is reported as
+    such. `new_owner_change`: an owner change the last check hadn't seen."""
+    same = (
+        isinstance(earlier, dict)
+        and earlier.get("sha256") == target.sha256
+        and earlier.get("link_target") == target.link_target
+    )
+    if "owner_changed" in result:
+        result["new_owner_change"] = not (same and "owner_changed" in earlier)
+    key = _key(target.sha256, target.link_target)
+    keys = mismatched.setdefault(target.path, set())
+    outcome = result.get("outcome")
+    if key is None:
+        return
+    if outcome in MISMATCHES:
+        if key not in keys and len(keys) >= MAX_MISMATCHED_PER_PATH:
+            keys.discard(sorted(keys)[0])
+        keys.add(key)
+    elif key in keys:
+        if outcome == "matched":
+            keys.discard(key)  # the package's own file for the version installed
+        else:
+            result["reported_before"] = True
+            # The first check that doesn't show it again (later ones carry the mark).
+            result["no_longer_shown"] = (
+                same and earlier.get("outcome") in MISMATCHES
+            ) or not isinstance(earlier, dict)
 
 
 def _check(
@@ -169,29 +258,87 @@ def _check(
         return not_checked(f"{show(system_id)} isn't covered")
     if _same_release(system) != _same_release(_os(baseline)):
         return not_checked("the system or its release isn't the baseline's")
-    owner = _owner(snapshot, target.path)
+    owner, before = _single(_owner(snapshot, target.path)), _single(_owner(baseline, target.path))
+
+    def against(claim: dict) -> dict:
+        return _against(target, snapshot, baseline, package, seen, previous, base, before, claim)
+
+    current_owners = snapshot.live.get("pam_owners")
+    complete_now = isinstance(current_owners, dict) and current_owners.get("complete") is True
+    if (
+        target.how == "unchanged"
+        and before is not None
+        # No owner counts only when this collection recorded them all (a list
+        # cut short, or not collected, says nothing about the paths it lacks).
+        # A baseline several packages listed is left only for packages it didn't list.
+        and ((owner is None and complete_now)
+             or (owner is not None and owner.get("several") and not before.get("several"))
+             or (owner is not None
+                 and not any(_same_owner(snapshot, c, b) for c in _claims(owner)
+                             for b in _claims(before))))
+    ):  # fmt: skip
+        # The content is the baseline's but the package records now name
+        # another owner (or none, or several): rare when honest, and the way
+        # to hide a module swapped before the baseline from this check
+        # (#217). It is held to the baseline's owner instead.
+        base["owner_changed"] = {"baseline": _who(before), "now": _who(owner) if owner else None}
+        if owner is not None and owner.get("several"):
+            base["owner_changed"]["now"] = "several"
+        # Held to the baseline's packages; one recorded by a collector that sent
+        # only one name is that name's.
+        owner = before if len(_claims(before)) > 1 else dict(before, several=False)
     if owner is None:
         return not_checked("no owning package was recorded for it")
     if owner.get("several"):
-        return not_checked("more than one package lists it")
+        return _several(target, snapshot, baseline, owner, before, not_checked, against)
+    if before is not None and not _same_owner(snapshot, owner, before):
+        return not_checked("its owning package isn't the baseline's")
+    return against(owner)
+
+
+def _against(
+    target: Target,
+    snapshot: Snapshot,
+    baseline: Snapshot,
+    package,
+    seen,
+    previous,
+    base: dict,
+    before: dict | None,
+    owner: dict,
+) -> dict:
+    """The lookup and comparison for one owner, once it is held to the
+    baseline's."""
+    system_id, release = _os(snapshot)
+
+    def not_checked(reason: str) -> dict:
+        return dict(base, outcome="not_checked", reason=reason)
+
     # The baseline's owners count only when it recorded all of them (a
     # collector before 0.1.4 recorded none; a list cut short can't vouch for
     # the paths it lacks).
     baseline_owners = baseline.live.get("pam_owners")
     owners_known = isinstance(baseline_owners, dict) and baseline_owners.get("complete") is True
-    before = _owner(baseline, target.path)
-    if before is not None and (before.get("package"), before.get("arch")) != (
-        owner.get("package"),
-        owner.get("arch"),
-    ):
-        return not_checked("its owning package isn't the baseline's")
     if before is None and target.how == "changed" and owners_known:
         return not_checked("no owning package was recorded for it at the baseline")
     if not _complete(snapshot, "packages"):
         return not_checked("the package list wasn't collected whole")
     installed = _installed(snapshot, owner)
     if installed is None:
-        return not_checked("there isn't exactly one installed version of its package")
+        # The records name an owner the package list doesn't have once: the
+        # module can't be held to any signed package (#224's review).
+        if "owner_changed" in base:
+            return dict(
+                not_checked(
+                    "there isn't exactly one installed version of the baseline's owning package"
+                ),
+                unverified="package",
+            )
+        return dict(
+            not_checked("there isn't exactly one installed version of its package"),
+            unverified="package",
+            package=owner["package"],
+        )
     _, version, arch = installed
     earlier = _installed(baseline, owner) if _complete(baseline, "packages") else None
     if earlier is not None and earlier[2] != arch:
@@ -234,18 +381,107 @@ def _check(
     )
     result["newest_seen"] = newest
     result["older_than_seen"] = _older(system_id, version, newest) if newest else None
+    if not all(LOOKUP_FIELD.fullmatch(x) for x in (owner["package"], version, arch)):
+        # Never sent to the distribution's servers: no real package is named so.
+        return dict(result, outcome="not_checked", reason="an odd package name, version or "
+                    "architecture", unverified="version")  # fmt: skip
     official = package(Lookup(system_id, release, owner["package"], version, arch))
     if official.cached:
         result["cached"] = True  # answered from this machine's cache, no download
     if not official.found:
         return dict(
-            result, outcome="not_checked", reason=official.reason, transient=official.transient
+            result,
+            outcome="not_checked",
+            reason=official.reason,
+            transient=official.transient,
+            **_unverified(snapshot, target.path, arch, official.unlisted),
         )
     if target.link_target is not None:
         outcome = _compare_link(official, target, _merged_dirs(snapshot))
     else:
         outcome = compare_file(official, target.path, target.sha256, _merged_dirs(snapshot))
     return dict(result, outcome=outcome, source=official.source, signer=official.signer)
+
+
+def _unverified(snapshot: Snapshot, path: str, arch: str, kind: str) -> dict[str, str]:
+    """The mark for a lookup that found nothing (see Official.unlisted); an
+    architecture not covered counts only when it isn't the server's own or a
+    32-bit one in its own directory."""
+    if kind == "arch":
+        machine = (_items(snapshot, "host").get("kernel") or {}).get("machine")
+        if arch in NATIVE.get(machine, ()) or (arch in ("i386", "i686") and MULTILIB.match(path)):
+            return {}
+        kind = "version"
+    return {"unverified": kind} if kind in ("package", "version") else {}
+
+
+def _single(owner: dict[str, Any] | None) -> dict[str, Any] | None:
+    """ "Several" with only one name left once the collector left out names
+    dpkg and rpm never make: that one is the owner (#224's review)."""
+    if owner is not None and owner.get("several") and owner.get("claims"):
+        if len(_claims(owner)) == 1:
+            return dict(owner, several=False)
+    return owner
+
+
+def _claims(owner: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Every package that lists the path (the collector sends them when
+    there are several, from 0.1.5), the recorded owner first."""
+    if owner is None:
+        return []
+    found = [owner]
+    for claim in owner.get("claims") or ():
+        if isinstance(claim, dict) and _who(claim) not in [_who(c) for c in found]:
+            found.append(claim)
+    return found
+
+
+def _several(target, snapshot, baseline, owner, before, not_checked, against) -> dict:
+    """A path more than one package lists: checked against each of them the
+    baseline listed too (all of them at the first collection). The file is
+    its package's when one of them ships it; a signed package that ships
+    another file there, with none matching, is `differs`, as for one owner.
+    A collector before 0.1.5 sent only one name: not checked."""
+    claims = _claims(owner)
+    if len(claims) < 2:
+        return not_checked("more than one package lists it")
+    held = _claims(before) if before is not None else claims
+    results = [
+        against(claim) for claim in claims if any(_same_owner(snapshot, claim, b) for b in held)
+    ]
+    outcomes = [r.get("outcome") for r in results]
+    # A match vouches for the file; a different file in a signed package is a
+    # mismatch whatever the others say; "no such file" needs every one to say so.
+    wanted = ["matched", "differs", "link"]
+    if results and "not_checked" not in outcomes:
+        wanted += ["ghost", "absent"]  # a package that makes it on the server vouches for none
+    for outcome in wanted:
+        for result in results:
+            if result.get("outcome") == outcome:
+                found = dict(result, several=[_who(c) for c in claims])
+                if owner.get("claims_cut"):
+                    found["claims_cut"] = True
+                if outcome != "matched" and any(r.get("transient") for r in results):
+                    # Another package's lookup failed on this side: it may be
+                    # the one that ships this file, so it is asked again.
+                    found["transient"] = True
+                return found
+    reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
+    marks = {}
+    kinds = {r.get("unverified") for r in results}
+    if "package" in kinds or owner.get("claims_cut"):
+        marks["unverified"] = "package"
+    elif "version" in kinds:
+        marks["unverified"] = "version"
+    if owner.get("claims_cut"):
+        marks["claims_cut"] = True  # more packages list it than the collector sends
+    return dict(
+        not_checked("more than one package lists it, and none of them could be checked"
+                    + (f" ({'; '.join(reasons)})" if reasons else "")),
+        several=[_who(c) for c in claims],
+        transient=any(r.get("transient") for r in results),
+        **marks,
+    )  # fmt: skip
 
 
 def _compare_link(official, target: Target, merged: dict[str, str]) -> str:
@@ -339,6 +575,23 @@ def _owner(snapshot: Snapshot, path: str) -> dict[str, Any] | None:
     return owner if isinstance(owner, dict) and isinstance(owner.get("package"), str) else None
 
 
+def _who(owner: dict[str, Any]) -> dict[str, Any]:
+    """An owner as the results record it: package and architecture."""
+    return {"package": owner.get("package"), "arch": owner.get("arch")}
+
+
+def _same_owner(snapshot: Snapshot, owner: dict[str, Any], before: dict[str, Any]) -> bool:
+    """The same package and architecture; or one of them names no
+    architecture (dpkg's list moved between pkg.list and pkg:amd64.list with
+    a Multi-Arch change) and both lead to the same installed package."""
+    if _who(owner) == _who(before):
+        return True
+    if owner.get("package") != before.get("package") or (owner.get("arch") and before.get("arch")):
+        return False
+    now, then = _installed(snapshot, owner), _installed(snapshot, before)
+    return now is not None and then is not None and now[0] == then[0]
+
+
 def _installed(snapshot: Snapshot, owner: dict[str, Any]) -> tuple[str, str, str] | None:
     """(key, version, the package's architecture) of the one installed
     package the owner names: by name and architecture when the owner gives
@@ -398,7 +651,13 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
             # Every module is checked (V.7); the counts and reasons stay the
             # changed ones', and the unchanged are counted apart.
             unchanged[outcome] = unchanged.get(outcome, 0) + 1
-            if outcome in ("not_checked", "ghost"):
+            # (One with an owner change, or reported before, is a finding.)
+            named = (
+                "owner_changed" in result
+                or result.get("reported_before")
+                or result.get("unverified")
+            )
+            if outcome in ("not_checked", "ghost") and not named:
                 reason = str(
                     result.get("reason") or "its package lists it as a file made on the server"
                 )[:200]

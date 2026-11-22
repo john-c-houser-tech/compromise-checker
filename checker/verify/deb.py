@@ -250,6 +250,7 @@ class Ubuntu:
         self.launchpad = launchpad.rstrip("/") if launchpad else None
         self.now = now or datetime.now(UTC)
         self._lists: dict[tuple[str, str, str], dict | None] = {}
+        self._failed: dict = {}  # lists that failed this run: (base, suite, part) -> why
         self._releases: dict[tuple[str, str], tuple | None] = {}  # verified InRelease
 
     def files(self, release: str, package: str, version: str, arch: str):
@@ -257,9 +258,13 @@ class Ubuntu:
         `arch` is the package's own architecture: amd64, or all."""
         codename = CODENAMES.get(release)
         if codename is None:
-            raise PackageError(f"Ubuntu {show(release)} isn't covered")
+            uncovered = PackageError(f"Ubuntu {show(release)} isn't covered")
+            uncovered.unlisted = ""  # the whole system: no sign about this package
+            raise uncovered
         if arch not in ARCHES + ("all",):
-            raise PackageError(f"{show(arch)} isn't covered yet")
+            uncovered = PackageError(f"{show(arch)} isn't covered yet")
+            uncovered.unlisted = "arch"  # honest for the server's own architecture
+            raise uncovered
         if "+esm" in version:
             # Ubuntu Pro's Extended Security Maintenance: its packages are on
             # esm.ubuntu.com, behind a Pro token, signed with another key.
@@ -275,7 +280,9 @@ class Ubuntu:
             # In none of the current lists under any version (a vendor's or a
             # PPA's package): Launchpad and the dated copies aren't asked,
             # so its name isn't sent there.
-            raise PackageError(f"{show(package)} isn't one of Ubuntu's packages")
+            unknown = PackageError(f"{show(package)} isn't one of Ubuntu's packages")
+            unknown.unlisted = "package"
+            raise unknown
         if hit is None and self.snapshot:
             copies = self._copies(codename, package, version, lists_arch)
             hit = self._find(copies, package, version, arch, lists_arch, problems)
@@ -285,6 +292,7 @@ class Ubuntu:
                 f"{show(package)} {show(version)} isn't in Ubuntu's archive{why}"
             )
             missing.transient = bool(problems)  # a list that failed: worth asking again later
+            missing.unlisted = "version"
             raise missing
         base, entry, signer = hit
         if entry.size > MAX_DEB:
@@ -326,11 +334,15 @@ class Ubuntu:
 
     def _list(self, base, suite, component, arch):
         key = (base, suite, f"{component}/{arch}")
+        if key in self._failed:
+            # Not asked again this run, but still a problem each time: a list
+            # that failed mustn't read as one without the package (#224).
+            raise PackageError(self._failed[key])
         if key not in self._lists:
             try:
                 self._lists[key] = self._load(base, suite, component, arch)
-            except PackageError:
-                self._lists[key] = None  # don't ask again this run
+            except PackageError as exc:
+                self._failed[key] = str(exc)
                 raise
         return self._lists[key]
 
@@ -338,23 +350,32 @@ class Ubuntu:
         """(index hashes, signer) of the suite's verified InRelease, once a run."""
         key = (base, suite)
         if key not in self._releases:
-            self._releases[key] = None
-            url = f"{base}/dists/{suite}/InRelease"
-            # A dated copy never changes; the archive's lists are kept a few hours.
-            fixed = bool(self.snapshot) and base.startswith(self.snapshot + "/")
-            name = "inrelease-" + hashlib.sha256(url.encode()).hexdigest()[:40]
-            kept = self._kept(name, None if fixed else LISTS_MAX_AGE, MAX_INRELEASE)
-            if kept is not None:
-                try:
-                    self._releases[key] = self._checked_release(kept, base, suite)
-                    return self._releases[key]
-                except PackageError:
-                    self._forget(name)  # a kept copy that fails is fetched again, once
-            release = self.fetcher.get(url, MAX_INRELEASE)
-            if release is None:
-                return None
-            self._releases[key] = self._checked_release(release, base, suite)
-            self._keep(name, release)  # kept only once it has checked out
+            try:
+                return self._fetch_release(key, base, suite)
+            except BaseException:
+                self._releases.pop(key, None)  # failed: asked again, never "no such suite"
+                raise
+        return self._releases[key]
+
+    def _fetch_release(self, key, base, suite):
+        """The suite's InRelease, fetched and checked (or kept from before)."""
+        self._releases[key] = None
+        url = f"{base}/dists/{suite}/InRelease"
+        # A dated copy never changes; the archive's lists are kept a few hours.
+        fixed = bool(self.snapshot) and base.startswith(self.snapshot + "/")
+        name = "inrelease-" + hashlib.sha256(url.encode()).hexdigest()[:40]
+        kept = self._kept(name, None if fixed else LISTS_MAX_AGE, MAX_INRELEASE)
+        if kept is not None:
+            try:
+                self._releases[key] = self._checked_release(kept, base, suite)
+                return self._releases[key]
+            except PackageError:
+                self._forget(name)  # a kept copy that fails is fetched again, once
+        release = self.fetcher.get(url, MAX_INRELEASE)
+        if release is None:
+            return None
+        self._releases[key] = self._checked_release(release, base, suite)
+        self._keep(name, release)  # kept only once it has checked out
         return self._releases[key]
 
     def _checked_release(self, release: bytes, base: str, suite: str):

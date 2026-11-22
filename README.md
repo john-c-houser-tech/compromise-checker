@@ -22,7 +22,7 @@ products, and for organizations that don't want to install a security agent on
 their servers. It works from the command line or from a web page with no
 command line required. Open source under the AGPL, from NouriLoop LLC.
 
-**Status:** a pre-release. Version 0.1.4 is out and everything described here
+**Status:** a pre-release. Version 0.1.5 is out and everything described here
 works today, but it is an early release, so expect rough edges. [How to install it](https://nouriloop.com/work/compromise-checker/install/).
 
 ## What you need

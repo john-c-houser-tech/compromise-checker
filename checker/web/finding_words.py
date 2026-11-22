@@ -331,6 +331,10 @@ BY_VARIANT = {
         "The server's list of installed packages couldn't be read whole, so the files in the part of the system that checks passwords couldn't be checked against the distribution's packages.",
         "If this server is slow, nothing to do. If it is new for this server, ask someone to look at its package records.",
     ),
+    ("pam.changes", "unhashed"): (
+        "A file in the part of the system that checks passwords couldn't be checked against the distribution's packages: it was too large, refused, unreadable or out of time, it is a device file, or the directory couldn't be listed whole. The distribution's own modules are small.",
+        "If it was out of time and this server is slow, check again. Otherwise ask someone to look at it before changing anything on this server.",
+    ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
         "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",

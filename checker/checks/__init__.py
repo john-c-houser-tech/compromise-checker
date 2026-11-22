@@ -28,8 +28,9 @@ from checker.snapshot import Snapshot
 # against the distribution's own packages (#189); 19: an unchanged PAM module whose owner
 # changed is held to the baseline's owner and reported (#217); 20: a PAM module no package
 # lists in a complete owner list, or only under malformed names; an owner list cut at its
-# limit, or left incomplete; a module whose package isn't installed or signed.
-CHECKS_VERSION = 20
+# limit, or left incomplete; a module whose package isn't installed or signed; 21: a PAM
+# module of any name with no owner, a file in a PAM module directory with no hash.
+CHECKS_VERSION = 21
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"

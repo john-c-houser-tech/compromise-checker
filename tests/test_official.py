@@ -1592,3 +1592,73 @@ def test_owners_unread_is_low_for_honest_gaps():
                           baseline_id="b1", baseline_snapshot=baseline)  # fmt: skip
         found = [f for f in run_checks(context)[0] if f.variant == "owners_unread"]
         assert [f.band for f in found] == [band]
+
+
+# --- Unhashed files and names without .so ---------------------------------------------------
+
+
+def test_a_file_in_a_pam_directory_without_a_hash_is_reported():
+    big = "/usr/lib/x86_64-linux-gnu/security/pam_big.so"
+    pam = {
+        UNIX: {"sha256": BAD, "type": "-"},
+        big: {"type": "-", "size": 9_000_000, "hash_skipped": "larger than 8388608 bytes"},
+        OTHER: {"type": "-", "hash_skipped": "time limit"},
+        "/usr/lib/x86_64-linux-gnu/security/pam_filter": {"type": "d"},
+        "/usr/lib/x86_64-linux-gnu/security/pam_link.so": {"type": "l", "link_target": "x"},
+    }
+    owners = {UNIX: owner(), big: owner(), OTHER: owner()}
+    found = [f for f in owner_findings(pam, owners) if f.variant == "unhashed"]
+    assert [(f.band, f.summary) for f in found] == [
+        ("high", f"{big}: larger than 8388608 bytes (9000000 bytes)"),
+        ("medium", f"{OTHER}: time limit"),
+    ]
+
+
+def test_a_changed_module_without_a_hash_is_reported_once():
+    before = dict(BEFORE, pam={UNIX: {"type": "-", "size": 1, "hash_skipped": "refused"}})
+    after = dict(AFTER, pam={UNIX: {"type": "-", "size": 2, "hash_skipped": "refused"}})
+    found = pam_findings(before, after, FakeVerifier({UNIX: {"sha256": BAD}}))
+    assert len([f for f in found if UNIX in f.summary]) == 1
+
+
+def test_a_module_of_any_name_no_package_lists_is_high():
+    planted = "/usr/lib/x86_64-linux-gnu/security/pam_x"
+    filter_ = "/usr/lib/x86_64-linux-gnu/security/pam_filter/upperLOWER"
+    pam = {UNIX: {"sha256": BAD}, planted: {"sha256": GOOD}, filter_: {"sha256": GOOD}}
+    found = owner_findings(pam, {UNIX: owner(), filter_: owner()})
+    assert [(f.band, f.summary) for f in found] == [("high", f"{planted}: no package lists it")]
+
+
+def test_devices_and_cut_listings_in_pam_directories_are_reported():
+    dev = "/usr/lib/x86_64-linux-gnu/security/pam_dev.so"
+    pam = {UNIX: {"sha256": BAD, "type": "-"}, dev: {"type": "b", "device": [8, 1]}}
+    from checker.checks import Context, run_checks
+
+    current = snap(pam=pam, owners={UNIX: owner()})
+    current.sections["pam"].gaps.append(
+        "walk of /usr/lib/x86_64-linux-gnu/security: 3 directories not entered"
+    )
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1")
+    found = [f for f in run_checks(context)[0] if f.variant == "unhashed"]
+    assert sorted((f.band, f.title) for f in found) == [
+        ("high", "A device file in a PAM module directory"),
+        ("medium", "A PAM module directory wasn't listed whole"),
+    ]
+
+
+def test_an_update_s_temporary_file_is_medium_and_a_plain_name_high():
+    temp = "/usr/lib/x86_64-linux-gnu/security/pam_unix.so.dpkg-new"
+    rpm_temp = "/usr/lib64/security/pam_unix.so;6a1f0c2b"
+    pam = {UNIX: {"sha256": BAD}, temp: {"sha256": GOOD}, rpm_temp: {"sha256": GOOD}}
+    found = owner_findings(pam, {UNIX: owner()})
+    assert sorted((f.band, f.title) for f in found) == [
+        ("medium", "A package manager's temporary file in a PAM module directory"),
+        ("medium", "A package manager's temporary file in a PAM module directory"),
+    ]
+    # An executable without .so, reported by the unowned-files scan: high, as a .so is.
+    plain = "/usr/lib/x86_64-linux-gnu/security/pam_x"
+    found = owner_findings({UNIX: {"sha256": BAD}, plain: {"sha256": GOOD}}, {UNIX: owner()},
+                           unowned={plain: {}})  # fmt: skip
+    assert [(f.band, f.title) for f in found] == [
+        ("high", "A PAM module that no package installed")
+    ]

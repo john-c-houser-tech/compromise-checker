@@ -1189,6 +1189,71 @@ def _packages_unread(context: Context) -> list[Finding]:
     ]
 
 
+# A package manager's file mid-update (dpkg's .dpkg-new, rpm's ";1a2b3c4d"):
+# no package lists it, and PAM loads it only if a line names it.
+UPDATE_TEMPORARY = re.compile(r"(?:\.dpkg-(?:new|tmp|dist|old)|;[0-9a-f]{8})\Z")
+
+
+def _unhashed_modules(context: Context, reported: set[str]) -> list[Finding]:
+    """Files in a PAM module directory that couldn't be checked against a
+    package, said in their own right: a regular file the collector didn't
+    hash (larger than its limit, refused, unreadable; distribution modules
+    are far below the limit: high, out of time only medium), a device file
+    there (one can be mapped like a module: high), and a directory listing
+    cut short or not entered all the way down (medium)."""
+    from checker.official import MODULE_PATH
+
+    found = []
+    section = context.snapshot.sections.get("pam")
+    for gap in section.gaps if section is not None else []:
+        if str(gap).startswith("walk of "):
+            found.append(
+                Finding(
+                    "pam.changes",
+                    "A PAM module directory wasn't listed whole",
+                    COMPROMISE,
+                    "medium",
+                    str(gap),
+                    [],
+                    [],
+                    variant="unhashed",
+                )  # fmt: skip
+            )
+    for path, item in sorted(context.items("pam").items()):
+        if path in reported or not MODULE_PATH.fullmatch(path):
+            continue
+        if item.get("type") in ("b", "c"):
+            found.append(
+                Finding(
+                    "pam.changes",
+                    "A device file in a PAM module directory",
+                    COMPROMISE,
+                    "high",
+                    f"{path}: device {item.get('device')}",
+                    [f"path:{path}"],
+                    [{"item": ["pam", path]}],
+                    variant="unhashed",
+                )  # fmt: skip
+            )
+            continue
+        if item.get("type") != "-" or item.get("sha256"):
+            continue
+        why = str(item.get("hash_skipped") or "no hash was sent")
+        found.append(
+            Finding(
+                "pam.changes",
+                "A file in a PAM module directory that couldn't be checked",
+                COMPROMISE,
+                "medium" if why == "time limit" else "high",
+                f"{path}: {why}" + (f" ({item['size']} bytes)" if item.get("size") else ""),
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+                variant="unhashed",
+            )
+        )
+    return found
+
+
 def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
     """What the server's owner records leave out or can't vouch for:
     - a list cut at its limit, which no real system reaches (a few hundred
@@ -1255,13 +1320,27 @@ def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
     complete = owners.get("complete") is True
     unowned = context.items("unowned_executables")
     for path, item in sorted(context.items("pam").items()):
-        if path in unowned or not path.endswith(".so"):
+        # Any name: PAM loads a module by its path, whatever it ends in.
+        if path in unowned:
             continue
         # Regular files: the scan for unowned files looks at those only, so a
         # link (an agent's installer may make one) isn't reported this way.
         if not MODULE_PATH.fullmatch(path) or not item.get("sha256") or item.get("type") == "l":
             continue
         record = listed.get(path)
+        if UPDATE_TEMPORARY.search(path) and record is None and complete:
+            found.append(
+                Finding(
+                    "pam.changes",
+                    "A package manager's temporary file in a PAM module directory",
+                    COMPROMISE,
+                    "medium",
+                    f"{path}: no package lists it (an update was running, or a file named so)",
+                    [f"path:{path}"],
+                    [{"item": ["pam", path]}],
+                )  # fmt: skip
+            )
+            continue
         if isinstance(record, dict) and record.get("odd"):
             why = "its package records name it only with names dpkg and rpm never make"
         elif record is None and complete:
@@ -1369,6 +1448,7 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "owner_unverified",
         "version_unverified",
         "packages_unread",
+        "unhashed",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1443,8 +1523,10 @@ def pam_changes(context: Context) -> list[Finding]:
     findings += _owner_changes(context, reported if diff is not None else set())
     findings += _pam_owner_records(context, reported if diff is not None else set())
     findings += _packages_unread(context)
+    findings += _unhashed_modules(context, reported if diff is not None else set())
     for path in context.items("unowned_executables"):
-        if "/security/" in path and path.endswith(".so"):
+        # Any name: PAM loads a module by its path.
+        if "/security/" in path and not UPDATE_TEMPORARY.search(path):
             findings.append(
                 Finding(
                     "pam.changes",

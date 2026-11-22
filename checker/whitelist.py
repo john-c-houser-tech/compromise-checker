@@ -565,6 +565,7 @@ NAMED_ONLY = {
     ("pam.changes", "owner_unverified"),
     ("pam.changes", "version_unverified"),
     ("pam.changes", "packages_unread"),
+    ("pam.changes", "unhashed"),
 }
 
 

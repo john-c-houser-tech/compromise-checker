@@ -583,6 +583,8 @@ def test_a_whitelist_rule_must_name_differs_to_cover_it():
     assert matches(Match(check="pam.changes", variant="differs", path=UNIX), differs)
     changed = dict(differs, variant="changed")
     assert matches(Match(check="pam.changes", path=UNIX), changed)
+    moved = dict(differs, variant="owner_changed")  # #217: how a swap would be hidden
+    assert not matches(Match(check="pam.changes", path=UNIX), moved)
 
 
 def test_a_genuine_file_whose_mode_or_owner_changed_stays_high():
@@ -980,7 +982,8 @@ def test_an_owner_change_on_a_genuine_module_is_medium(now, words):
     assert [(f.band, f.variant) for f in mine] == [("medium", "owner_changed")]
     assert mine[0].title == "A PAM module's owning package changed, its content didn't"
     assert f"name {words} as its owner" in mine[0].summary
-    assert "still the file in the baseline's owner libpam-modules" in mine[0].summary
+    assert "it is the file in the baseline's owner libpam-modules" in mine[0].summary
+    assert mine[0].new  # no earlier check had seen the owner change
 
 
 def test_an_owner_change_that_can_t_be_checked_is_medium_and_says_why():
@@ -1015,7 +1018,7 @@ def test_an_owner_change_after_the_module_was_reported_is_high():
         assert [(f.band, f.variant) for f in mine] == [
             ("high" if high else "medium", "owner_changed")
         ]
-        assert ("the previous check found it" in mine[0].summary) is high
+        assert ("an earlier check found it wasn't the file" in mine[0].summary) is high
 
 
 def test_no_owner_change_no_mark_and_a_changed_module_stays_as_it_was():
@@ -1052,3 +1055,93 @@ def test_analyze_reports_an_owner_swap_after_the_baseline_s_own_report(home):
                      verifier=FakeVerifier({UNIX: {"sha256": GOOD}}))  # fmt: skip
     pam = [f for f in second["findings"] if f["check"] == "pam.changes"]
     assert [(f["band"], f["variant"]) for f in pam] == [("high", "owner_changed")]
+
+
+# --- #217's reviews ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("owners_complete", [False, None])
+def test_an_owner_list_cut_short_or_not_collected_isn_t_an_owner_change(owners_complete):
+    before, after = owner_swap(GOOD, None)
+    current = snap(**after, owners_complete=bool(owners_complete))
+    if owners_complete is None:
+        current.live.pop("pam_owners")
+    baseline = snap(**before)
+    results = official.verify_pam(current, baseline, compare(baseline, current),
+                                  FakeVerifier({OTHER: {"sha256": GOOD}}), "b0")  # fmt: skip
+    result = results["files"][OTHER]
+    assert "owner_changed" not in result and result["outcome"] == "not_checked"
+
+
+def test_a_multi_arch_list_move_isn_t_an_owner_change():
+    # dpkg's pkg.list became pkg:amd64.list: the owner gains an architecture, same package.
+    before, after = owner_swap(GOOD, owner(arch=None))
+    found, results = pam_findings(
+        before, after, FakeVerifier({UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}}), raw=True
+    )
+    assert "owner_changed" not in results["files"][OTHER]
+    assert results["files"][OTHER]["outcome"] == "matched"
+    assert not [f for f in found if OTHER in f.summary]
+    # A changed module too: the same installed package, so held as the baseline's.
+    after = dict(AFTER, owners={UNIX: owner(arch=None)})
+    assert (
+        check(BEFORE, after, FakeVerifier({UNIX: {"sha256": BAD}}))["files"][UNIX]["outcome"]
+        == "matched"
+    )
+
+
+REPORTED = {"outcome": "differs", "sha256": BAD}
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        # The owner record left alone; the package list made unusable instead, or the
+        # release forged: each makes the module "not checked".
+        lambda a: a.update(packages={}),
+        lambda a: a.update(packages={"libpam-modules amd64": {"version": "9:not-in-archive"}}),
+        lambda a: a.update(os=("ubuntu", "22.04")),
+        lambda a: a.update(packages_complete=False),
+    ],
+)
+def test_a_reported_module_made_unchecked_stays_high(edit):
+    before, after = owner_swap(BAD, owner())
+    edit(after)
+    baseline, current = snap(**before), snap(**after)
+    diff = compare(baseline, current)
+    verifier = FakeVerifier(None, "isn't in Ubuntu's archive")
+    results = official.verify_pam(current, baseline, diff, verifier, "b0",
+                                  reported={"files": {OTHER: REPORTED}})  # fmt: skip
+    result = results["files"][OTHER]
+    assert result["outcome"] == "not_checked" and result["reported_before"] is True
+    mine = [f for f in pam_findings(before, after, official_override=results)
+            if OTHER in f.summary]  # fmt: skip
+    assert [(f.band, f.variant, f.new) for f in mine] == [("high", "differs", True)]
+    assert "an earlier check found it wasn't the file in Ubuntu's package" in mine[0].summary
+    # Nor is it counted as an unchecked module in the coverage notes: it is a finding.
+    assert not official.summary(results)["unchanged_not_checked"]
+    # The next check keeps it high (no longer new), until the file itself changes.
+    again = official.verify_pam(current, baseline, diff, verifier, "b0", reported=results)
+    assert again["files"][OTHER]["reported_before"] is True
+    mine = [f for f in pam_findings(before, after, official_override=again)
+            if OTHER in f.summary]  # fmt: skip
+    assert [(f.band, f.new) for f in mine] == [("high", False)]
+    replaced = {"files": {OTHER: dict(again["files"][OTHER], sha256=GOOD)}}
+    fresh = official.verify_pam(current, baseline, diff, verifier, "b0", reported=replaced)
+    assert "reported_before" not in fresh["files"][OTHER]
+
+
+def test_an_owner_change_stays_high_and_is_new_only_once():
+    before, after = owner_swap(
+        BAD, owner("evil-pam"), packages={"evil-pam amd64": {"version": "1.0"}}
+    )
+    baseline, current = snap(**before), snap(**after)
+    diff = compare(baseline, current)
+    verifier = FakeVerifier({OTHER: {"sha256": GOOD}})
+    first = official.verify_pam(current, baseline, diff, verifier, "b0",
+                                reported={"files": {OTHER: REPORTED}})  # fmt: skip
+    second = official.verify_pam(current, baseline, diff, verifier, "b0", reported=first)
+    for results, new in ((first, True), (second, False)):
+        mine = [f for f in pam_findings(before, after, official_override=results)
+                if OTHER in f.summary]  # fmt: skip
+        assert [(f.band, f.variant, f.new) for f in mine] == [("high", "owner_changed", new)]

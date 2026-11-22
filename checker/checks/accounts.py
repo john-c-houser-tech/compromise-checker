@@ -1073,47 +1073,62 @@ def _owner_change_words(change: dict) -> str:
 
 
 def _owner_changes(context: Context, reported: set[str]) -> list[Finding]:
-    """Modules whose content is the baseline's but whose owner, by the
-    package records, isn't (#217): rare when honest, and how root would
-    hide a module swapped before the baseline. Checked against the
-    baseline's owner instead; a mismatch is the high `differs` finding
-    above, anything else this one: medium, high when the previous check
-    had found the module wasn't its package's file."""
+    """Unchanged modules whose owner, by the package records, isn't the
+    baseline's (#217), or that an earlier check found weren't their
+    package's file and this one doesn't show again: how root would hide a
+    module swapped before the baseline. An owner change is held to the
+    baseline's owner (a mismatch is the high `differs` finding above);
+    anything else is reported here: an owner change medium, high once the
+    module was reported; a module reported before and no longer shown, high,
+    until the file itself changes."""
     modules = context.items("pam")
+    distribution = _distribution(context)
     found = []
     for path, result in sorted(((context.official or {}).get("files") or {}).items()):
         if not isinstance(result, dict) or result.get("how") != "unchanged" or path in reported:
             continue
         change = result.get("owner_changed")
-        if not isinstance(change, dict) or result.get("outcome") in WHAT_THE_PACKAGE_SAYS:
+        change = change if isinstance(change, dict) else None
+        before = result.get("reported_before") is True
+        if (change is None and not before) or result.get("outcome") in WHAT_THE_PACKAGE_SAYS:
             continue
         if official_result(context, path, modules) is None:
             continue
         outcome = result.get("outcome")
+        whose = "the baseline's owner" if change else "its package"
         if outcome == "matched":
-            checked = (
-                f"it is still the file in the baseline's owner"
-                f" {result.get('package')} {result.get('version')}"
-            )
+            checked = f"it is the file in {whose} {result.get('package')} {result.get('version')}"
         elif outcome == "ghost":
-            checked = "the baseline's owner lists it as a file made on the server"
+            checked = f"{whose} lists it as a file made on the server"
         else:
-            checked = f"not checked against the baseline's owner: {result.get('reason')}"
-        before = result.get("reported_before") is True
-        summary = f"{path}: {_owner_change_words(change)}; {checked}"
+            checked = f"not checked against {whose}: {result.get('reason')}"
+        parts = [_owner_change_words(change)] if change else []
+        parts.append(checked)
         if before:
-            summary += "; the previous check found it wasn't its package's file"
+            parts.append(f"an earlier check found it wasn't the file in {distribution}'s package")
+        if change:
+            title, variant = (
+                "A PAM module's owning package changed, its content didn't",
+                ("owner_changed"),
+            )
+            new = result.get("new_owner_change") is not False
+        else:
+            title, variant = (
+                f"A PAM module found to differ from {distribution}'s package, not checked again",
+                "differs",
+            )
+            new = result.get("no_longer_shown") is True
         found.append(
             Finding(
                 "pam.changes",
-                "A PAM module's owning package changed, its content didn't",
+                title,
                 COMPROMISE,
                 "high" if before else "medium",
-                summary,
+                f"{path}: " + "; ".join(parts),
                 [f"path:{path}"],
                 [{"item": ["pam", path]}],
-                new=context.new_since_previous("pam", path) or before,
-                variant="owner_changed",
+                new=new or (before and result.get("no_longer_shown") is True),
+                variant=variant,
             )
         )
     return found

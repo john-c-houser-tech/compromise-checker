@@ -109,6 +109,10 @@ def test_a_read_keeps_a_list_another_30_days_but_not_the_archive_s_release(tmp_p
     assert ubuntu._kept(archive.name, 3600, 100) is None  # the archive's: too old to use
     assert time.time() - index.stat().st_mtime < 60
     assert archive.stat().st_mtime == then  # its time is its age
+    fresh = time.time() - 600
+    os.utime(archive, (fresh, fresh))
+    assert ubuntu._kept(archive.name, 3600, 100) == b"x"  # read, and still its age
+    assert archive.stat().st_mtime == fresh
 
 
 def test_the_verifier_prunes_when_it_is_built(tmp_path):
@@ -119,4 +123,8 @@ def test_the_verifier_prunes_when_it_is_built(tmp_path):
     os.utime(old, (time.time() - 31 * DAY,) * 2)
     assert verifier_for(Verify(), tmp_path) is not None
     assert not old.exists()
-    assert verifier_for(Verify(enabled=False), tmp_path / "off") is None
+    prune._last.clear()  # a new day
+    off = _file(_lists(tmp_path), "index-" + "b" * 64, 0)
+    os.utime(off, (time.time() - 31 * DAY,) * 2)
+    assert verifier_for(Verify(enabled=False), tmp_path) is None
+    assert not off.exists()  # pruned with verify turned off too

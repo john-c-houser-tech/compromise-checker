@@ -443,8 +443,8 @@ version, are on until you turn them off):
   and its version. Whoever runs those servers can therefore see that someone fetched, say, a given version of
   `libpam-modules` for Ubuntu 24.04, and the timing suggests that some server's PAM changed; no server's name
   or address, finding or evidence is sent. What was downloaded is kept on the tool's machine, so a package is
-  fetched once for the whole fleet; the distributions' signed lists are deleted after 30 days unused. Without network access the change is reported as it always was, with a
-  note saying it couldn't be checked.
+  fetched once for the whole fleet; the distributions' signed lists are deleted after 30 days unused. Without
+  network access the change is reported as it always was, with a note saying it couldn't be checked.
 - a request to GitHub once a day for the public list of this tool's releases, and for the newest one's signed
   description, from the web interface when someone with full access opens a page. It carries nothing about your
   machine or servers beyond what any download does: the address it comes from. The setting `updates.check`

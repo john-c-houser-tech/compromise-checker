@@ -88,7 +88,8 @@ their baselines; purge a removed host by name instead.
 Checking PAM modules against the distributions' packages (policy §10) keeps
 what it downloads under `cache/` in the tool's folder. These hold no evidence,
 and nothing in them is trusted: each is checked again (signature, hash)
-whenever it is used. Each run clears out what is no longer needed:
+whenever it is used. Each run (with package checks on or off) clears out
+what is no longer needed:
 
 - `cache/signed-lists`: a signed list not used for 30 days. Ubuntu's lists
   change several times a day, so the old ones would otherwise pile up.

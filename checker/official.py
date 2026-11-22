@@ -29,8 +29,9 @@ from checker.verify import compare as compare_file
 from checker.verify.words import show
 
 # 2: links checked by their target; 3: every module, not only changed; 4: an unchanged
-# module whose owner changed is held to the baseline's owner (#217)
-OFFICIAL_VERSION = 4
+# module whose owner changed is held to the baseline's owner (#217); 5: a module several
+# packages list is checked against each of them
+OFFICIAL_VERSION = 5
 CHANGED_FIELDS = {"sha256", "content_sha256", "size", "inode", "link_target"}
 # Outcomes where the signed package contradicts the server's file.
 MISMATCHES = ("differs", "absent", "link")
@@ -246,6 +247,10 @@ def _check(
         return not_checked("the system or its release isn't the baseline's")
     owner = _owner(snapshot, target.path)
     before = _owner(baseline, target.path)
+
+    def against(claim: dict) -> dict:
+        return _against(target, snapshot, baseline, package, seen, previous, base, before, claim)
+
     current_owners = snapshot.live.get("pam_owners")
     complete_now = isinstance(current_owners, dict) and current_owners.get("complete") is True
     if (
@@ -268,14 +273,35 @@ def _check(
     if owner is None:
         return not_checked("no owning package was recorded for it")
     if owner.get("several"):
-        return not_checked("more than one package lists it")
+        return _several(target, snapshot, baseline, owner, before, not_checked, against)
+    if before is not None and not _same_owner(snapshot, owner, before):
+        return not_checked("its owning package isn't the baseline's")
+    return against(owner)
+
+
+def _against(
+    target: Target,
+    snapshot: Snapshot,
+    baseline: Snapshot,
+    package,
+    seen,
+    previous,
+    base: dict,
+    before: dict | None,
+    owner: dict,
+) -> dict:
+    """The lookup and comparison for one owner, once it is held to the
+    baseline's."""
+    system_id, release = _os(snapshot)
+
+    def not_checked(reason: str) -> dict:
+        return dict(base, outcome="not_checked", reason=reason)
+
     # The baseline's owners count only when it recorded all of them (a
     # collector before 0.1.4 recorded none; a list cut short can't vouch for
     # the paths it lacks).
     baseline_owners = baseline.live.get("pam_owners")
     owners_known = isinstance(baseline_owners, dict) and baseline_owners.get("complete") is True
-    if before is not None and not _same_owner(snapshot, owner, before):
-        return not_checked("its owning package isn't the baseline's")
     if before is None and target.how == "changed" and owners_known:
         return not_checked("no owning package was recorded for it at the baseline")
     if not _complete(snapshot, "packages"):
@@ -341,6 +367,50 @@ def _check(
     else:
         outcome = compare_file(official, target.path, target.sha256, _merged_dirs(snapshot))
     return dict(result, outcome=outcome, source=official.source, signer=official.signer)
+
+
+def _claims(owner: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Every package that lists the path (the collector sends them when
+    there are several, from 0.1.5), the recorded owner first."""
+    if owner is None:
+        return []
+    found = [owner]
+    for claim in owner.get("claims") or ():
+        if isinstance(claim, dict) and _who(claim) not in [_who(c) for c in found]:
+            found.append(claim)
+    return found
+
+
+def _several(target, snapshot, baseline, owner, before, not_checked, against) -> dict:
+    """A path more than one package lists: checked against each of them the
+    baseline listed too (all of them at the first collection). The file is
+    its package's when one of them ships it; a signed package that ships
+    another file there, with none matching, is `differs`, as for one owner.
+    A collector before 0.1.5 sent only one name: not checked."""
+    claims = _claims(owner)
+    if len(claims) < 2:
+        return not_checked("more than one package lists it")
+    held = _claims(before) if before is not None else claims
+    results = [
+        against(claim) for claim in claims if any(_same_owner(snapshot, claim, b) for b in held)
+    ]
+    outcomes = [r.get("outcome") for r in results]
+    # A match vouches for the file; a different file in a signed package is a
+    # mismatch whatever the others say; "no such file" needs every one to say so.
+    wanted = ["matched", "differs", "link"]
+    if results and "not_checked" not in outcomes:
+        wanted += ["ghost", "absent"]  # a package that makes it on the server vouches for none
+    for outcome in wanted:
+        for result in results:
+            if result.get("outcome") == outcome:
+                return dict(result, several=[_who(c) for c in claims])
+    reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
+    return dict(
+        not_checked("more than one package lists it, and none of them could be checked"
+                    + (f" ({'; '.join(reasons)})" if reasons else "")),
+        several=[_who(c) for c in claims],
+        transient=any(r.get("transient") for r in results),
+    )  # fmt: skip
 
 
 def _compare_link(official, target: Target, merged: dict[str, str]) -> str:

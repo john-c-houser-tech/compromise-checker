@@ -26,8 +26,9 @@ from checker.snapshot import Snapshot
 # baseline's own logs held, containerd's new random port, and dpkg lists rewritten by their
 # own package's update are no longer counted (#198-#200); 18: changed PAM modules judged
 # against the distribution's own packages (#189); 19: an unchanged PAM module whose owner
-# changed is held to the baseline's owner and reported (#217).
-CHECKS_VERSION = 19
+# changed is held to the baseline's owner and reported (#217); 20: a PAM module no package
+# lists in a complete owner list, an owner list cut at its limit.
+CHECKS_VERSION = 20
 
 COMPROMISE = "compromise indicator"
 HYGIENE = "hygiene"

@@ -30,6 +30,7 @@ SNAPSHOT_VERSION = 18
 # inode and times; 17: PAM modules' owners (#189); 18: packages listed twice marked
 
 MAX_PAM_OWNERS = 2000  # the collector sends at most this many (#189)
+MAX_CLAIMS = 8  # packages listing one PAM module path, when several do
 
 # Section: (what it holds, the collector modules it comes from).
 SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -1292,6 +1293,16 @@ class SnapshotBuilder:
                     "arch": data.get("arch") if isinstance(data.get("arch"), str) else None,
                     "several": data.get("several") is True,
                 }
+                # Every package that lists it, when several do (collector 0.1.5).
+                claims = [
+                    {"package": c["package"],
+                     "arch": c.get("arch") if isinstance(c.get("arch"), str) else None}
+                    for c in (data.get("claims") if isinstance(data.get("claims"), list) else [])
+                    [:MAX_CLAIMS]
+                    if isinstance(c, dict) and isinstance(c.get("package"), str)
+                ]  # fmt: skip
+                if claims and listed[data["path"]]["several"]:
+                    listed[data["path"]]["claims"] = claims
             else:
                 owners["dropped"] = owners.get("dropped", 0) + 1
         elif name == "pam_owners_summary":
@@ -1302,6 +1313,8 @@ class SnapshotBuilder:
                 and data.get("count") == len(owners["owners"])
                 and not owners.get("dropped")
             )
+            if data.get("cut") == "limit":
+                owners["cut"] = "limit"  # more PAM module files than any system has
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 

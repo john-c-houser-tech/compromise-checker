@@ -1143,6 +1143,54 @@ def _owner_changes(context: Context, reported: set[str]) -> list[Finding]:
     return found
 
 
+def _pam_owner_records(context: Context) -> list[Finding]:
+    """What the server's owner records leave out: a PAM module no package
+    lists, in a complete owner list, though the scan for unowned files
+    didn't report it (its own limit can be filled with planted files); and a
+    list cut at its limit, which no real system reaches (a few hundred PAM
+    module files), so the modules past it can't be checked."""
+    from checker.official import MODULE_PATH
+
+    owners = context.snapshot.live.get("pam_owners")
+    if not isinstance(owners, dict):
+        return []
+    found = []
+    if owners.get("cut") == "limit":
+        found.append(
+            Finding(
+                "pam.changes",
+                "More PAM module files than any system has: not all their owners were recorded",
+                COMPROMISE,
+                "medium",
+                f"{len(owners.get('owners') or {})} owner records sent, the collector's limit",
+                [],
+                [],
+                variant="owners_cut",
+            )
+        )
+    if owners.get("complete") is not True:
+        return found
+    listed = owners.get("owners") or {}
+    unowned = context.items("unowned_executables")
+    for path, item in sorted(context.items("pam").items()):
+        if path in listed or path in unowned or not path.endswith(".so"):
+            continue
+        if not MODULE_PATH.fullmatch(path) or not (item.get("sha256") or item.get("link_target")):
+            continue
+        found.append(
+            Finding(
+                "pam.changes",
+                "A PAM module that no package installed",
+                COMPROMISE,
+                "high",
+                f"{path}: no package lists it",
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+            )
+        )
+    return found
+
+
 def _pam_modules_updated(context: Context, explained: list) -> Finding:
     """One low finding for every module the distribution's own packages
     explain: an ordinary update, not one strong sign per file."""
@@ -1178,6 +1226,7 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "version_unknown",
         "differs",
         "owner_changed",
+        "owners_cut",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1250,6 +1299,7 @@ def pam_changes(context: Context) -> list[Finding]:
             findings.append(_pam_modules_updated(context, explained))
     findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
     findings += _owner_changes(context, reported if diff is not None else set())
+    findings += _pam_owner_records(context)
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

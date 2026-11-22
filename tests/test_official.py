@@ -979,6 +979,9 @@ def test_an_owner_change_on_a_genuine_module_is_medium(now, words):
         before, after, FakeVerifier({UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}})
     )
     mine = [f for f in found if OTHER in f.summary]
+    if now is None:  # no package lists it, in a complete list: that is high on its own
+        assert ("high", "A PAM module that no package installed") in titles(mine)
+        mine = [f for f in mine if f.variant == "owner_changed"]
     assert [(f.band, f.variant) for f in mine] == [("medium", "owner_changed")]
     assert mine[0].title == "A PAM module's owning package changed, its content didn't"
     assert f"name {words} as its owner" in mine[0].summary
@@ -1223,3 +1226,119 @@ def test_analyze_looks_back_past_a_check_that_stored_no_results(home):
                     verifier=FakeVerifier(None, "isn't in Ubuntu's archive"))  # fmt: skip
     pam = [f for f in third["findings"] if f["check"] == "pam.changes"]
     assert [(f["band"], f["variant"]) for f in pam] == [("high", "differs")]
+
+
+# --- Owner records forged before the baseline ---------------------------------------------
+
+
+def claims_owner(*claims):
+    first = claims[0]
+    return dict(owner(*first), several=True,
+                claims=[{"package": p, "arch": a} for p, a in claims])  # fmt: skip
+
+
+class ByPackage(FakeVerifier):
+    """Each package's own files."""
+
+    def __init__(self, by_package):
+        super().__init__()
+        self.by_package = by_package
+
+    def package(self, lookup):
+        self.asked.append(lookup)
+        files = self.by_package.get(lookup.package)
+        if files is None:
+            return Official(lookup, reason="not in the archive")
+        return Official(lookup, dict(files), "https://archive.test/x.deb", "FPR")
+
+
+TWO = {"libpam-modules amd64": {"version": "1.5.3-5ubuntu5.6"}, "other amd64": {"version": "2"}}
+
+
+def first_check(owners, verifier, packages=TWO, content=BAD):
+    current = snap(pam={UNIX: {"sha256": content}}, owners=owners, packages=packages)
+    return official.verify_pam(current, None, None, verifier, "b1")["files"][UNIX]
+
+
+def test_a_module_several_packages_list_is_checked_against_each():
+    owners = {UNIX: claims_owner(("other", "amd64"), ("libpam-modules", "amd64"))}
+    genuine = ByPackage({"libpam-modules": {UNIX: {"sha256": BAD}}, "other": {}})
+    result = first_check(owners, genuine)
+    assert result["outcome"] == "matched" and result["package"] == "libpam-modules"
+    # A trojan: the real owner ships another file, the made-up one none.
+    trojan = ByPackage({"libpam-modules": {UNIX: {"sha256": GOOD}}, "other": {}})
+    assert first_check(owners, trojan)["outcome"] == "differs"
+    # The real owner ships another file, the other can't be looked up: still differs.
+    local = ByPackage({"libpam-modules": {UNIX: {"sha256": GOOD}}})
+    assert first_check(owners, local)["outcome"] == "differs"
+    # No package ships it, as every one says: absent; one not answering: not checked.
+    assert (
+        first_check(owners, ByPackage({"libpam-modules": {}, "other": {}}))["outcome"] == "absent"
+    )
+    result = first_check(owners, ByPackage({"libpam-modules": {}}))
+    assert (
+        result["outcome"] == "not_checked" and "none of them could be checked" in result["reason"]
+    )
+    # An older collector sent one name only: not checked, as before.
+    assert first_check({UNIX: owner(several=True)}, genuine)["outcome"] == "not_checked"
+
+
+def test_several_owners_are_held_to_those_the_baseline_listed():
+    # At the baseline libpam-modules alone; later a second package that "ships" the trojan.
+    before = dict(BEFORE, pam={UNIX: {"sha256": BAD}})
+    after = dict(BEFORE, pam={UNIX: {"sha256": BAD, "size": 9}},
+                 owners={UNIX: claims_owner(("libpam-modules", "amd64"), ("other", "amd64"))},
+                 packages=TWO)  # fmt: skip
+    verifier = ByPackage(
+        {"libpam-modules": {UNIX: {"sha256": GOOD}}, "other": {UNIX: {"sha256": BAD}}}
+    )
+    result = check(before, after, verifier)["files"][UNIX]
+    assert result["outcome"] == "differs"
+    assert [lookup.package for lookup in verifier.asked] == ["libpam-modules"]
+
+
+def test_snapshot_keeps_the_claims_and_the_cut(tmp_path):
+    records = host_records(
+        extra=[
+            rec("system_files", "pam_module_owner", path=UNIX, package="a", several=True,
+                claims=[{"package": "a"}, {"package": "b", "arch": "amd64"}, "junk", {"x": 1}]
+                + [{"package": f"p{i}"} for i in range(20)]),
+            rec("system_files", "pam_owners_summary", complete=False, count=1, cut="limit"),
+        ]
+    )  # fmt: skip
+    from test_snapshot import snapshot_of_records
+
+    found = snapshot_of_records(records, tmp_path).live["pam_owners"]
+    assert found["owners"][UNIX]["claims"][:2] == [
+        {"package": "a", "arch": None}, {"package": "b", "arch": "amd64"}
+    ]  # fmt: skip
+    assert len(found["owners"][UNIX]["claims"]) <= 8 and found["cut"] == "limit"
+
+
+def owner_findings(pam, owners, complete=True, unowned=None, cut=None):
+    from checker.checks import Context, run_checks
+    from checker.snapshot import Section
+
+    current = snap(pam=pam, owners=owners, owners_complete=complete)
+    if cut:
+        current.live["pam_owners"]["cut"] = cut
+    current.sections["unowned_executables"] = Section(dict(unowned or {}))
+    context = Context(host="h", bundle_id="b1", events=[], snapshot=current, baseline_id="b1")
+    return [f for f in run_checks(context)[0] if f.check == "pam.changes"]
+
+
+def test_a_module_no_package_lists_is_high_whatever_the_unowned_scan_sent():
+    pam = {UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}}
+    found = owner_findings(pam, {UNIX: owner()})
+    assert [(f.band, f.title, f.summary) for f in found] == [
+        ("high", "A PAM module that no package installed", f"{OTHER}: no package lists it")
+    ]
+    assert owner_findings(pam, {UNIX: owner()}, complete=False) == []  # can't say
+    # Reported by the unowned scan: once, as before.
+    found = owner_findings(pam, {UNIX: owner()}, unowned={OTHER: {}})
+    assert len(found) == 1 and found[0].evidence == [{"item": ["unowned_executables", OTHER]}]
+
+
+def test_an_owner_list_cut_at_its_limit_is_medium():
+    found = owner_findings({UNIX: {"sha256": BAD}}, {UNIX: owner()}, complete=False, cut="limit")
+    assert [(f.band, f.variant) for f in found] == [("medium", "owners_cut")]

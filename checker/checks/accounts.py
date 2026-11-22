@@ -1189,6 +1189,35 @@ def _packages_unread(context: Context) -> list[Finding]:
     ]
 
 
+def _unhashed_modules(context: Context, reported: set[str]) -> list[Finding]:
+    """Regular files in a PAM module directory the collector didn't hash
+    (larger than its limit, refused, unreadable): never checked against a
+    package, so said in their own right. Real modules are well under 1 MiB:
+    high; out of time only, medium."""
+    from checker.official import MODULE_PATH
+
+    found = []
+    for path, item in sorted(context.items("pam").items()):
+        if path in reported or item.get("type") != "-" or item.get("sha256"):
+            continue
+        if not MODULE_PATH.fullmatch(path):
+            continue
+        why = str(item.get("hash_skipped") or "no hash was sent")
+        found.append(
+            Finding(
+                "pam.changes",
+                "A file in a PAM module directory that couldn't be checked",
+                COMPROMISE,
+                "medium" if why == "time limit" else "high",
+                f"{path}: {why}" + (f" ({item['size']} bytes)" if item.get("size") else ""),
+                [f"path:{path}"],
+                [{"item": ["pam", path]}],
+                variant="unhashed",
+            )
+        )
+    return found
+
+
 def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
     """What the server's owner records leave out or can't vouch for:
     - a list cut at its limit, which no real system reaches (a few hundred
@@ -1255,7 +1284,8 @@ def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
     complete = owners.get("complete") is True
     unowned = context.items("unowned_executables")
     for path, item in sorted(context.items("pam").items()):
-        if path in unowned or not path.endswith(".so"):
+        # Any name: PAM loads a module by its path, whatever it ends in.
+        if path in unowned:
             continue
         # Regular files: the scan for unowned files looks at those only, so a
         # link (an agent's installer may make one) isn't reported this way.
@@ -1369,6 +1399,7 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "owner_unverified",
         "version_unverified",
         "packages_unread",
+        "unhashed",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1443,6 +1474,7 @@ def pam_changes(context: Context) -> list[Finding]:
     findings += _owner_changes(context, reported if diff is not None else set())
     findings += _pam_owner_records(context, reported if diff is not None else set())
     findings += _packages_unread(context)
+    findings += _unhashed_modules(context, reported if diff is not None else set())
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

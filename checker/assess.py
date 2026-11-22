@@ -276,12 +276,15 @@ def official_results(
         return stored
     if verifier is None or not official_targets(snapshot, since_baseline, every=True):
         return None
-    previous_results = None
-    if previous_id and previous_id != baseline_id:
-        previous_results = load_official(store, store.bundle(previous_id), identity)
+    reported = None
+    if previous_id:
+        reported = load_official(store, store.bundle(previous_id), identity)
+    # The newest versions seen count only since the baseline, so the
+    # baseline's own results (what it had seen before) don't.
+    previous_results = reported if previous_id != baseline_id else None
     results = verify_pam(
         snapshot, baseline_snapshot, since_baseline, verifier, baseline_id,
-        previous_snapshot, previous_results,
+        previous_snapshot, previous_results, reported,
     )  # fmt: skip
     store_official(store, row, recipients, results)
     return results

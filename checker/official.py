@@ -28,8 +28,12 @@ from checker.verify import Lookup, Verifier, package_paths
 from checker.verify import compare as compare_file
 from checker.verify.words import show
 
-OFFICIAL_VERSION = 3  # 2: links checked by their target; 3: every module, not only changed
+# 2: links checked by their target; 3: every module, not only changed; 4: an unchanged
+# module whose owner changed is held to the baseline's owner (#217)
+OFFICIAL_VERSION = 4
 CHANGED_FIELDS = {"sha256", "content_sha256", "size", "inode", "link_target"}
+# Outcomes where the signed package contradicts the server's file.
+MISMATCHES = ("differs", "absent", "link")
 SYSTEMS = {"ubuntu": "dpkg", "rocky": "rpm", "almalinux": "rpm", "rhel": "rpm"}
 # The PAM module directories the collector walks (PAM_MODULE_DIRS), one or two
 # levels down: /etc/security/ (configuration) is not one of them.
@@ -104,6 +108,7 @@ def verify_pam(
     baseline_id: str | None,
     previous: Snapshot | None = None,
     previous_results: dict[str, Any] | None = None,
+    reported: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """{"version", "baseline_id", "checked_at", "files": {path: result}}:
     each result has an "outcome" (matched, differs, absent, link, ghost or
@@ -119,9 +124,25 @@ def verify_pam(
             asked[lookup] = verifier.package(lookup)
         return asked[lookup]
 
+    # The previous check's results (the baseline's own too, when it was the
+    # previous), for what it had reported.
+    earlier_files = ((reported if reported is not None else previous_results) or {}).get(
+        "files"
+    ) or {}
     for target in targets(snapshot, since_baseline, every=True):
         try:
             files[target.path] = _check(target, snapshot, baseline, package, seen, previous)
+            earlier = earlier_files.get(target.path)
+            if (
+                "owner_changed" in files[target.path]
+                and isinstance(earlier, dict)
+                and earlier.get("outcome") in MISMATCHES
+                and earlier.get("sha256") == target.sha256
+                and earlier.get("link_target") == target.link_target
+            ):
+                # The previous check found this module wasn't its package's file:
+                # an owner change now is how a swap would be hidden.
+                files[target.path]["reported_before"] = True
         except Exception as exc:  # noqa: BLE001 - nothing the server sends may stop the step
             files[target.path] = {
                 "outcome": "not_checked",
@@ -170,6 +191,21 @@ def _check(
     if _same_release(system) != _same_release(_os(baseline)):
         return not_checked("the system or its release isn't the baseline's")
     owner = _owner(snapshot, target.path)
+    before = _owner(baseline, target.path)
+    if (
+        target.how == "unchanged"
+        and before is not None
+        and not before.get("several")
+        and (owner is None or owner.get("several") or _who(owner) != _who(before))
+    ):
+        # The content is the baseline's but the package records now name
+        # another owner (or none, or several): rare when honest, and the way
+        # to hide a module swapped before the baseline from this check
+        # (#217). It is held to the baseline's owner instead.
+        base["owner_changed"] = {"baseline": _who(before), "now": _who(owner) if owner else None}
+        if owner is not None and owner.get("several"):
+            base["owner_changed"]["now"] = "several"
+        owner = before
     if owner is None:
         return not_checked("no owning package was recorded for it")
     if owner.get("several"):
@@ -179,11 +215,7 @@ def _check(
     # the paths it lacks).
     baseline_owners = baseline.live.get("pam_owners")
     owners_known = isinstance(baseline_owners, dict) and baseline_owners.get("complete") is True
-    before = _owner(baseline, target.path)
-    if before is not None and (before.get("package"), before.get("arch")) != (
-        owner.get("package"),
-        owner.get("arch"),
-    ):
+    if before is not None and _who(before) != _who(owner):
         return not_checked("its owning package isn't the baseline's")
     if before is None and target.how == "changed" and owners_known:
         return not_checked("no owning package was recorded for it at the baseline")
@@ -191,6 +223,10 @@ def _check(
         return not_checked("the package list wasn't collected whole")
     installed = _installed(snapshot, owner)
     if installed is None:
+        if "owner_changed" in base:
+            return not_checked(
+                "there isn't exactly one installed version of the baseline's owning package"
+            )
         return not_checked("there isn't exactly one installed version of its package")
     _, version, arch = installed
     earlier = _installed(baseline, owner) if _complete(baseline, "packages") else None
@@ -337,6 +373,11 @@ def _owner(snapshot: Snapshot, path: str) -> dict[str, Any] | None:
     owners = (snapshot.live.get("pam_owners") or {}).get("owners") or {}
     owner = owners.get(path)
     return owner if isinstance(owner, dict) and isinstance(owner.get("package"), str) else None
+
+
+def _who(owner: dict[str, Any]) -> dict[str, Any]:
+    """An owner as the results record it: package and architecture."""
+    return {"package": owner.get("package"), "arch": owner.get("arch")}
 
 
 def _installed(snapshot: Snapshot, owner: dict[str, Any]) -> tuple[str, str, str] | None:

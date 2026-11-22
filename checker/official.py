@@ -30,9 +30,22 @@ from checker.verify.words import show
 
 # 2: links checked by their target; 3: every module, not only changed; 4: an unchanged
 # module whose owner changed is held to the baseline's owner (#217); 5: a module several
-# packages list is checked against each of them
-OFFICIAL_VERSION = 5
+# packages list is checked against each of them; 6: why a lookup found nothing (#224)
+OFFICIAL_VERSION = 6
 CHANGED_FIELDS = {"sha256", "content_sha256", "size", "inode", "link_target"}
+# A package name, version or architecture as dpkg and rpm make them.
+LOOKUP_FIELD = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_~:-]{0,127}")
+# The machine's own architectures by uname, and 32-bit ones beside them in
+# their own directories (multilib): an architecture the checker doesn't
+# cover is then the whole server's, or an honest extra, not a sign.
+NATIVE = {
+    "x86_64": ("amd64", "x86_64"),
+    "aarch64": ("arm64", "aarch64"),
+    "ppc64le": ("ppc64el", "ppc64le"),
+    "s390x": ("s390x",),
+    "riscv64": ("riscv64",),
+}
+MULTILIB = re.compile(r"/(?:usr/)?lib/(?:i386-linux-gnu/)?security/")
 # Outcomes where the signed package contradicts the server's file.
 MISMATCHES = ("differs", "absent", "link")
 SYSTEMS = {"ubuntu": "dpkg", "rocky": "rpm", "almalinux": "rpm", "rhel": "rpm"}
@@ -255,14 +268,14 @@ def _check(
     if (
         target.how == "unchanged"
         and before is not None
-        and (not before.get("several") or before.get("claims"))
         # No owner counts only when this collection recorded them all (a list
         # cut short, or not collected, says nothing about the paths it lacks).
-        # A baseline several packages listed is left only for one it didn't list.
+        # A baseline several packages listed is left only for packages it didn't list.
         and ((owner is None and complete_now)
              or (owner is not None and owner.get("several") and not before.get("several"))
-             or (owner is not None and not owner.get("several")
-                 and not any(_same_owner(snapshot, owner, b) for b in _claims(before))))
+             or (owner is not None
+                 and not any(_same_owner(snapshot, c, b) for c in _claims(owner)
+                             for b in _claims(before))))
     ):  # fmt: skip
         # The content is the baseline's but the package records now name
         # another owner (or none, or several): rare when honest, and the way
@@ -271,7 +284,9 @@ def _check(
         base["owner_changed"] = {"baseline": _who(before), "now": _who(owner) if owner else None}
         if owner is not None and owner.get("several"):
             base["owner_changed"]["now"] = "several"
-        owner = before
+        # Held to the baseline's packages; one recorded by a collector that sent
+        # only one name is that name's.
+        owner = before if len(_claims(before)) > 1 else dict(before, several=False)
     if owner is None:
         return not_checked("no owning package was recorded for it")
     if owner.get("several"):
@@ -366,6 +381,10 @@ def _against(
     )
     result["newest_seen"] = newest
     result["older_than_seen"] = _older(system_id, version, newest) if newest else None
+    if not all(LOOKUP_FIELD.fullmatch(x) for x in (owner["package"], version, arch)):
+        # Never sent to the distribution's servers: no real package is named so.
+        return dict(result, outcome="not_checked", reason="an odd package name, version or "
+                    "architecture", unverified="version")  # fmt: skip
     official = package(Lookup(system_id, release, owner["package"], version, arch))
     if official.cached:
         result["cached"] = True  # answered from this machine's cache, no download
@@ -375,13 +394,25 @@ def _against(
             outcome="not_checked",
             reason=official.reason,
             transient=official.transient,
-            **({"unverified": official.unlisted} if official.unlisted else {}),
+            **_unverified(snapshot, target.path, arch, official.unlisted),
         )
     if target.link_target is not None:
         outcome = _compare_link(official, target, _merged_dirs(snapshot))
     else:
         outcome = compare_file(official, target.path, target.sha256, _merged_dirs(snapshot))
     return dict(result, outcome=outcome, source=official.source, signer=official.signer)
+
+
+def _unverified(snapshot: Snapshot, path: str, arch: str, kind: str) -> dict[str, str]:
+    """The mark for a lookup that found nothing (see Official.unlisted); an
+    architecture not covered counts only when it isn't the server's own or a
+    32-bit one in its own directory."""
+    if kind == "arch":
+        machine = (_items(snapshot, "host").get("kernel") or {}).get("machine")
+        if arch in NATIVE.get(machine, ()) or (arch in ("i386", "i686") and MULTILIB.match(path)):
+            return {}
+        kind = "version"
+    return {"unverified": kind} if kind in ("package", "version") else {}
 
 
 def _single(owner: dict[str, Any] | None) -> dict[str, Any] | None:

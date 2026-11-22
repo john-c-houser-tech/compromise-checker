@@ -5362,9 +5362,12 @@ def package_owners(run, module, links):
             continue
         owners, complete, facts = rpm_owners(run, resolved, links)
         return owners, "rpm", complete, {}, facts
+    problems.append(NO_PACKAGE_RECORDS)
     return None, None, False, {}, facts
 
 
+NO_PACKAGE_RECORDS = "no dpkg or rpm records were found"
+OUT_OF_TIME = "the package records couldn't be read in the time allowed"
 OWNERS_TIME_SHARE = 0.4  # of the module's remaining time, at most
 MAX_PAM_OWNERS = 2000  # owner records for PAM module files (a system has a few hundred)
 
@@ -5505,7 +5508,10 @@ def module_system_files(run):
     )
     if owners_problem:
         facts = dict(facts or {})
-        facts["problems"] = [f"the package records couldn't be read: {owners_problem}"[:200]]
+        facts["problems"] = [
+            OUT_OF_TIME if owners_problem == "time"
+            else f"the package records couldn't be read: {owners_problem}"[:200]
+        ]  # fmt: skip
     record_pam_owners(run, module, owners, owners_complete, facts, links)
     run.check_time()
 

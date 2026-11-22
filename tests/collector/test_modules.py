@@ -3607,7 +3607,8 @@ class SystemFilesTests(FixtureRoot):
         records = self.run_with(caps={})
         self.assertEqual(records_named(records, "pam_module_owner"), [])
         self.assertEqual(
-            records_named(records, "pam_owners_summary"), [{"complete": False, "count": 0}]
+            records_named(records, "pam_owners_summary"),
+            [{"complete": False, "count": 0, "problems": ["no dpkg or rpm records were found"]}],
         )
 
     def test_only_the_paths_the_pam_listing_walks_count(self):

@@ -1504,3 +1504,91 @@ def test_unverified_modules_are_one_finding_per_package_banded_by_kind():
 def test_owners_unread_says_why_or_that_it_wasn_t_said():
     found = owner_findings({UNIX: {"sha256": BAD}}, {UNIX: owner()}, complete=False)
     assert "didn't say why" in found[0].summary
+
+
+# --- #224's fourth round ----------------------------------------------------------------------
+
+
+def test_several_owners_swapped_for_others_are_an_owner_change():
+    several = claims_owner(("libpam-modules", "amd64"), ("other", "amd64"))
+    before = dict(BEFORE, pam={UNIX: {"sha256": BAD}}, owners={UNIX: several}, packages=TWO)
+    after = dict(before, owners={UNIX: claims_owner(("x", "amd64"), ("y", "amd64"))})
+    verifier = ByPackage({"libpam-modules": {UNIX: {"sha256": GOOD}}, "other": {}})
+    result = check(before, after, verifier)["files"][UNIX]
+    assert result["owner_changed"]["now"] == "several" and result["outcome"] == "differs"
+    # A baseline from a collector that sent one name for several: held to that name.
+    old = dict(before, owners={UNIX: owner(several=True)})
+    result = check(old, after, verifier)["files"][UNIX]
+    assert result["owner_changed"] and result["outcome"] == "differs"
+
+
+@pytest.mark.parametrize("version", ["x" * 300, "1.0 OR 1=1", "1.0/../.."])
+def test_an_odd_version_is_never_asked_about_and_is_low(version):
+    after = dict(AFTER, packages={"libpam-modules amd64": {"version": version}})
+    before, current = snap(**BEFORE), snap(**dict(after, pam=BEFORE["pam"]))
+    verifier = FakeVerifier({UNIX: {"sha256": GOOD}})
+    result = official.verify_pam(current, before, compare(before, current), verifier, "b0")[
+        "files"
+    ][UNIX]
+    assert result["unverified"] == "version" and verifier.asked == []
+
+
+@pytest.mark.parametrize(
+    ("machine", "arch", "path", "marked"),
+    [
+        ("aarch64", "arm64", UNIX, False),  # the server's own: the whole server isn't covered
+        ("x86_64", "i386", "/usr/lib/i386-linux-gnu/security/pam_unix.so", False),  # multilib
+        ("x86_64", "i686", "/usr/lib/security/pam_unix.so", False),
+        ("x86_64", "arm64", UNIX, True),  # not this server's: a sign
+        ("x86_64", "i686", "/usr/lib64/security/pam_unix.so", True),
+    ],
+)
+def test_an_architecture_not_covered_counts_only_when_it_isn_t_the_server_s(
+    machine, arch, path, marked
+):
+    current = snap()
+    current.sections["host"].items["kernel"] = {"machine": machine}
+    assert bool(official._unverified(current, path, arch, "arch")) is marked
+
+
+def test_a_package_list_not_collected_whole_is_a_finding():
+    from checker.checks import Context, run_checks
+
+    cases = (
+        (["software: timeout"], ["software: timeout"], "low"),  # as at the baseline: slow
+        (["software: timeout"], [], "medium"),  # new: could be brought on
+        (["dpkg status past the limit"], ["dpkg status past the limit"], "medium"),
+    )
+    for gaps, earlier, band in cases:
+        current = snap(pam={UNIX: {"sha256": BAD}}, owners={UNIX: owner()},
+                       packages_complete=False)  # fmt: skip
+        current.sections["packages"].gaps[:] = gaps
+        baseline = snap(pam={UNIX: {"sha256": BAD}}, owners={UNIX: owner()},
+                        packages_complete=not earlier)  # fmt: skip
+        baseline.sections["packages"].gaps[:] = earlier
+        results = official.verify_pam(current, None, None, FakeVerifier(None), "b1")
+        assert results["files"][UNIX]["reason"] == "the package list wasn't collected whole"
+        context = Context(host="h", bundle_id="b2", events=[], snapshot=current,
+                          baseline_id="b1", baseline_snapshot=baseline,
+                          official=results)  # fmt: skip
+        found = [f for f in run_checks(context)[0] if f.variant == "packages_unread"]
+        assert [f.band for f in found] == [band]
+
+
+def test_owners_unread_is_low_for_honest_gaps():
+    found = owner_findings({UNIX: {"sha256": BAD}}, {UNIX: owner()}, complete=False)
+    assert found[0].band == "medium"
+    from checker.checks import Context, run_checks
+
+    current = snap(pam={UNIX: {"sha256": BAD}}, owners={UNIX: owner()}, owners_complete=False)
+    current.live["pam_owners"]["problems"] = [
+        "the package records couldn't be read in the time allowed"
+    ]
+    for earlier, band in (([], "medium"), (list(current.live["pam_owners"]["problems"]), "low")):
+        baseline = snap(pam={UNIX: {"sha256": BAD}}, owners={UNIX: owner()},
+                        owners_complete=False)  # fmt: skip
+        baseline.live["pam_owners"]["problems"] = earlier
+        context = Context(host="h", bundle_id="b2", events=[], snapshot=current,
+                          baseline_id="b1", baseline_snapshot=baseline)  # fmt: skip
+        found = [f for f in run_checks(context)[0] if f.variant == "owners_unread"]
+        assert [f.band for f in found] == [band]

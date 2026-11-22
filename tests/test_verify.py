@@ -733,6 +733,7 @@ def test_results_are_cached_and_a_damaged_cache_is_ignored(pinned, tmp_path):
 @needs_gpgv
 def test_a_package_not_found_is_not_asked_about_again_for_a_day(pinned, tmp_path, monkeypatch):
     site = Site()
+    site.files["https://dl.rockylinux.org/vault/rocky/"] = b'<a href="9.5/">'
     Verifier(tmp_path, fetcher=site).package(ROCKY)
     assert not list(tmp_path.glob("*.json"))  # no result: only a marker that it wasn't there
     assert len(list(tmp_path.glob("*.missing"))) == 1
@@ -1195,3 +1196,44 @@ def test_vaults_can_be_left_out(pinned):
     site.files[url] = make_rpm(pinned, release="28.el9_8.1")
     assert not Verifier(None, fetcher=site, vaults=False).package(lookup).found
     assert not any("vault" in u for u in site.asked)
+
+
+@needs_gpgv
+def test_a_vault_listing_that_can_t_be_read_isn_t_no_such_package(pinned, tmp_path):
+    # #224: without the listing, the older builds weren't asked: asked again later.
+    found = Verifier(tmp_path, fetcher=Site()).package(ROCKY)
+    assert not found.found and found.transient and not list(tmp_path.glob("*.missing"))
+
+
+@needs_gpgv
+def test_a_list_that_failed_is_still_a_problem_for_the_next_lookup(pinned):
+    # #224: a list that failed once mustn't read later as one without the package.
+    site = Site()
+    site.ubuntu(pinned, ARCHIVE, "noble", [("libpam-tmpdir", "0.09", PAM)])
+    verifier = ubuntu_verifier(site)
+    real_get = site.get
+
+    def blip(url, limit, first=None):  # the one suite that has it fails, once
+        if url.endswith("/dists/noble/InRelease") and not getattr(site, "blipped", False):
+            site.blipped = True
+            site.down = True
+            try:
+                return real_get(url, limit, first)
+            finally:
+                site.down = False
+        return real_get(url, limit, first)
+
+    site.get = blip
+    assert verifier.package(Lookup("ubuntu", "24.04", "libpam-tmpdir", "0.09", "amd64")).transient
+    # The release is asked again: found
+    assert verifier.package(Lookup("ubuntu", "24.04", "libpam-tmpdir", "0.09", "amd64")).found
+    # A list whose contents don't match its signed hash: a problem every time.
+    broken = Site()
+    broken.ubuntu(pinned, ARCHIVE, "noble", [("libpam-tmpdir", "0.09", PAM)])
+    for url in list(broken.files):
+        if url.endswith("Packages.xz"):
+            broken.files[url] = b"not the signed list"
+    verifier = ubuntu_verifier(broken)
+    for _ in range(2):
+        found = verifier.package(Lookup("ubuntu", "24.04", "libpam-tmpdir", "0.09", "amd64"))
+        assert not found.found and found.unlisted != "package", found.reason

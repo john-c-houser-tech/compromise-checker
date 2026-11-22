@@ -252,7 +252,9 @@ class Rpm:
             uncovered.unlisted = ""  # the whole system: no sign about this package
             raise uncovered
         if arch not in ARCHES:
-            raise PackageError(f"{show(arch)} isn't covered yet")
+            uncovered = PackageError(f"{show(arch)} isn't covered yet")
+            uncovered.unlisted = "arch"  # honest for the server's own architecture
+            raise uncovered
         for part in (package, evr, arch):
             if not _SAFE.fullmatch(part.replace(":", "")):
                 raise PackageError("an odd package name or version")
@@ -279,7 +281,10 @@ class Rpm:
         # With the vaults asked too, every version the distribution built is
         # there: none of them is no such package (an EPEL or vendor one, or a
         # made-up one); without them, an old version may simply be gone.
-        missing.unlisted = "package" if self.vaults else "version"
+        listed = self._minors.get(config["vault_list"] + major)
+        missing.unlisted = "package" if self.vaults and listed else "version"
+        if self.vaults and listed is None:
+            missing.transient = True  # the vault's listing couldn't be read: asked again
         raise missing
 
     def _roots(self, config, major, rel):
@@ -299,7 +304,9 @@ class Rpm:
     def _vault_minors(self, config, major):
         key = config["vault_list"] + major
         if key not in self._minors:
-            listing = self.fetcher.get(config["vault_list"], MAX_LISTING) or b""
+            listing = self.fetcher.get(config["vault_list"], MAX_LISTING)
+            if listing is None:
+                return []  # not kept: asked again, and the lookup isn't "no such package"
             found = set(re.findall(rf'href="({major}\.\d+)/"', listing.decode("ascii", "replace")))
             self._minors[key] = sorted(found, key=lambda m: int(m.split(".")[1]), reverse=True)
         return self._minors[key]

@@ -1143,6 +1143,52 @@ def _owner_changes(context: Context, reported: set[str]) -> list[Finding]:
     return found
 
 
+# What the collector says when the owner list is incomplete for reasons honest
+# servers have too (collector.OUT_OF_TIME, collector.NO_PACKAGE_RECORDS).
+HONEST_GAPS = (
+    "the package records couldn't be read in the time allowed",
+    "no dpkg or rpm records were found",
+)
+PACKAGES_CUT = "the package list wasn't collected whole"  # checker.official's reason
+
+
+def _packages_unread(context: Context) -> list[Finding]:
+    """Modules left unchecked because the package list wasn't collected
+    whole (#224): low when the time allowed ran out, else medium (a list
+    padded past its limit would leave every module so)."""
+    files = ((context.official or {}).get("files") or {}).values()
+    count = sum(1 for r in files if isinstance(r, dict) and r.get("reason") == PACKAGES_CUT)
+    if not count:
+        return []
+
+    def gaps_of(snapshot) -> list[str]:
+        section = snapshot.sections.get("packages") if snapshot is not None else None
+        return [str(g) for g in (section.gaps if section is not None else [])]
+
+    gaps = gaps_of(context.snapshot)
+    # Low only for a timeout the baseline had too (root can bring one on).
+    earlier = gaps_of(context.baseline_snapshot)
+    timed_out = (
+        bool(gaps)
+        and all("time" in g for g in gaps)
+        and any("time" in g for g in earlier)
+        and context.baseline_snapshot is not context.snapshot
+    )
+    return [
+        Finding(
+            "pam.changes",
+            "The server's package list wasn't collected whole, so PAM modules weren't checked",
+            COMPROMISE,
+            "low" if timed_out else "medium",
+            f"{count} PAM module file(s) not checked: "
+            + ("; ".join(gaps[:3]) or "no reason given"),
+            [],
+            [],
+            variant="packages_unread",
+        )
+    ]
+
+
 def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
     """What the server's owner records leave out or can't vouch for:
     - a list cut at its limit, which no real system reaches (a few hundred
@@ -1177,14 +1223,28 @@ def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
         )
     elif owners.get("complete") is not True:
         # (Out of time, a list unreadable, a record dropped: the owner-less
-        # check below can't run, so this is said in its own right.)
+        # check below can't run, so this is said in its own right. Out of
+        # time, or no package manager at all, happens on honest servers: low.)
+        problems = [str(p) for p in owners.get("problems") or []]
+        # Low only when the baseline had the same gap: root can bring on a
+        # timeout by padding the records, so one that is new stays medium.
+        before = (
+            (context.baseline_snapshot.live.get("pam_owners") or {}).get("problems") or []
+            if context.baseline_snapshot is not None
+            else []
+        )
+        honest = (
+            bool(problems)
+            and all(p in HONEST_GAPS for p in problems)
+            and set(problems) <= {str(p) for p in before}
+        )
         found.append(
             Finding(
                 "pam.changes",
                 "The server's package records couldn't all be read",
                 COMPROMISE,
-                "medium",
-                "; ".join(str(p) for p in owners.get("problems") or [])
+                "low" if honest else "medium",
+                "; ".join(problems)
                 or "the owner list is incomplete, and the collector didn't say why",
                 [],
                 [],
@@ -1308,6 +1368,7 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "owners_unread",
         "owner_unverified",
         "version_unverified",
+        "packages_unread",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1381,6 +1442,7 @@ def pam_changes(context: Context) -> list[Finding]:
     findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
     findings += _owner_changes(context, reported if diff is not None else set())
     findings += _pam_owner_records(context, reported if diff is not None else set())
+    findings += _packages_unread(context)
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

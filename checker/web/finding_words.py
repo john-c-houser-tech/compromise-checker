@@ -317,7 +317,7 @@ BY_VARIANT = {
     ),
     ("pam.changes", "owners_unread"): (
         "Some of the server's records of which package installed which file couldn't be read, so files in the part of the system that checks passwords may not all have been checked.",
-        "Ask someone to look at the package records on this server. Damaged ones are rare.",
+        "If this server is slow and it happens every time, nothing to do. Otherwise ask someone to look at its package records; damaged ones are rare.",
     ),
     ("pam.changes", "owner_unverified"): (
         "Files in the part of the system that checks passwords belong, by the server's records, to a package that isn't one of the distribution's signed packages, or isn't properly installed, so they couldn't be checked. Software from another company or an extra repository (a login-security vendor, EPEL) does this honestly, and so does an update left half-finished; so would someone hiding a tampered file.",
@@ -325,7 +325,11 @@ BY_VARIANT = {
     ),
     ("pam.changes", "version_unverified"): (
         "Files in the part of the system that checks passwords come from a distribution package whose installed version couldn't be found among the signed packages (an older version than the checker can fetch, an Ubuntu Pro version, or an unusual build), so they weren't checked.",
-        "Update the server's packages; the next check can then compare them.",
+        "If the server is behind on updates, update it; the next check can then compare them. Ubuntu Pro (ESM) versions can't be checked yet.",
+    ),
+    ("pam.changes", "packages_unread"): (
+        "The server's list of installed packages couldn't be read whole, so the files in the part of the system that checks passwords couldn't be checked against the distribution's packages.",
+        "If this server is slow, nothing to do. If it is new for this server, ask someone to look at its package records.",
     ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",

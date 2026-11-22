@@ -52,7 +52,7 @@ class Lookup:
     arch: str
 
 
-UNLISTED = ("", "package", "version")
+UNLISTED = ("", "package", "version", "arch")
 
 
 @dataclass

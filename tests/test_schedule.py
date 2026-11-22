@@ -677,7 +677,7 @@ def test_hosts_left_unfinished_are_checked_first_next_run(fleet, tmp_path, monke
         order.append(host)
         found = real(store, host, *args, **kwargs)
         if host in left:
-            found["official_files"] = {"transient": 3, "downloaded": 0}
+            found["official_files"] = {"transient": 3, "starved": 3, "downloaded": 0}
         return found
 
     monkeypatch.setattr("checker.assess.analyze", analyze)

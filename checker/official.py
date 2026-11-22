@@ -397,6 +397,7 @@ def _against(
             reason=official.reason,
             transient=official.transient,
             **({"offline": True} if official.offline else {}),
+            **({"starved": True} if official.starved else {}),
             **_unverified(snapshot, target.path, arch, official.unlisted),
         )
     if target.link_target is not None:
@@ -468,8 +469,9 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
                     # Another package's lookup failed on this side: it may be
                     # the one that ships this file, so it is asked again.
                     found["transient"] = True
-                    if any(r.get("offline") for r in results):
-                        found["offline"] = True
+                    for flag in ("offline", "starved"):
+                        if any(r.get(flag) for r in results):
+                            found[flag] = True
                 return found
     reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
     marks = {}
@@ -485,7 +487,7 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
                     + (f" ({'; '.join(reasons)})" if reasons else "")),
         several=[_who(c) for c in claims],
         transient=any(r.get("transient") for r in results),
-        **({"offline": True} if any(r.get("offline") for r in results) else {}),
+        **{flag: True for flag in ("offline", "starved") if any(r.get(flag) for r in results)},
         **marks,
     )  # fmt: skip
 
@@ -646,13 +648,14 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Counts by outcome, and the reasons for what wasn't checked."""
     counts: dict[str, int] = {}
     reasons: dict[str, int] = {}
-    owner_unknown = transient = offline = downloaded = 0
+    owner_unknown = transient = offline = starved = downloaded = 0
     unchanged: dict[str, int] = {}
     unchanged_reasons: dict[str, int] = {}
     for result in ((stored or {}).get("files") or {}).values():
         outcome = result.get("outcome", "not_checked")
         transient += bool(result.get("transient"))
         offline += bool(result.get("offline"))
+        starved += bool(result.get("starved"))
         downloaded += outcome != "not_checked" and not result.get("cached")
         if result.get("how") == "unchanged":
             # Every module is checked (V.7); the counts and reasons stay the
@@ -681,6 +684,7 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
         "baseline_owner_unknown": owner_unknown,
         "transient": transient,
         "offline": offline,
+        "starved": starved,
         "unchanged": unchanged,
         "unchanged_not_checked": unchanged_reasons,
         "downloaded": downloaded,
@@ -705,10 +709,12 @@ OUT_OF_REACH = "not asked: the distributions' servers were out of reach this run
 
 
 def unfinished(assessment: dict[str, Any] | None) -> bool:
-    """Whether this host's check left package lookups to ask again (out of
-    the run's or its own time, or the servers out of reach)."""
+    """Whether the run cut this host's package lookups short: its clock
+    used up, or the servers found out of reach by an earlier host. Not for
+    a host that used its own `seconds_per_server`: being first is for those
+    the run left out."""
     found = (assessment or {}).get("official_files") or {}
-    return bool(found.get("transient"))
+    return bool(found.get("starved"))
 
 
 def unfinished_first(hosts: list, was_unfinished) -> list:
@@ -728,7 +734,9 @@ class _NoDownloads:
     def get(self, url, limit, first=None):
         from checker.verify.fetch import FetchError
 
-        raise FetchError(self.why)
+        error = FetchError(self.why)
+        error.starved = True  # the run gave this host no time
+        raise error
 
 
 def run_clock(settings: Any) -> RunClock | None:

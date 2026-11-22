@@ -2119,30 +2119,42 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             )
         done: dict[str, object] = {}
         printed = 0
-        for host in order:
-            try:
-                prior = prior_for(host, config, inventory)
-                done[host] = analyze(
-                    store, host, identity, recipients, args.bundle, prior, whitelists[host],
-                    *packs_for(host),
-                    verifier=verifier_for(
-                        config.verify, base, cached_only=verify_down, run=clock
-                    ),
-                )  # fmt: skip
-                verify_down = verify_down or unreachable(done[host])
-            except EvidenceError as exc:
-                done[host] = exc
-            # Each printed as soon as every host before it is done.
-            while printed < len(hosts) and hosts[printed] in done:
-                name = hosts[printed]
-                if printed:
-                    print()
-                if isinstance(done[name], EvidenceError):
-                    print(f"checker: {name}: {done[name]}", file=sys.stderr)
-                    status = 1
-                else:
-                    _print_assessment(done.pop(name), args)
-                printed += 1
+
+        def show(name: str) -> None:
+            nonlocal status
+            if printed:
+                print()
+            if isinstance(done[name], EvidenceError):
+                print(f"checker: {name}: {done[name]}", file=sys.stderr)
+                status = 1
+            else:
+                _print_assessment(done.pop(name), args)
+
+        try:
+            for host in order:
+                try:
+                    prior = prior_for(host, config, inventory)
+                    done[host] = analyze(
+                        store, host, identity, recipients, args.bundle, prior, whitelists[host],
+                        *packs_for(host),
+                        verifier=verifier_for(
+                            config.verify, base, cached_only=verify_down, run=clock
+                        ),
+                    )  # fmt: skip
+                    verify_down = verify_down or unreachable(done[host])
+                except EvidenceError as exc:
+                    done[host] = exc
+                # Each printed as soon as every host before it is done.
+                while printed < len(hosts) and hosts[printed] in done:
+                    show(hosts[printed])
+                    printed += 1
+        finally:
+            # Stopped part-way (Ctrl-C, a database error): what was done
+            # is still shown, in order.
+            for name in hosts[printed:]:
+                if name in done:
+                    show(name)
+                    printed += 1
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1

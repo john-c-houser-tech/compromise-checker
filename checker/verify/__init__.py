@@ -72,6 +72,8 @@ class Official:
     transient: bool = field(default=False, compare=False)
     # Of those, this machine couldn't reach the servers at all (FetchError.offline).
     offline: bool = field(default=False, compare=False)
+    # The run gave this host no (more) time (FetchError.starved).
+    starved: bool = field(default=False, compare=False)
     # Why the distribution's signed packages can't vouch for it, when the
     # package is the server's own business rather than this machine's or the
     # system's (not covered, a subscription): "package", no such package (a
@@ -194,6 +196,7 @@ class Verifier:
                 reason=f"couldn't download: {exc}",
                 transient=True,
                 offline=getattr(exc, "offline", False),
+                starved=getattr(exc, "starved", False),
             )
         official = Official(lookup, files, source, signer)
         self._keep(official)

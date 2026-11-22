@@ -540,6 +540,17 @@ def test_cli_analyze_checks_unfinished_hosts_first_and_prints_in_order(home, cap
     out = capsys.readouterr().out
     assert out.index("Host       db01") < out.index("Host       web01")  # printed in order
 
+    # Stopped part-way (Ctrl-C, say): what was already analysed is still shown.
+    def stopped(store, host, *args, **kwargs):
+        if host == "db01":
+            raise KeyboardInterrupt
+        return real(store, host, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "analyze", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["analyze", "--all"])
+    assert "Host       web01" in capsys.readouterr().out
+
 
 def test_changes_that_are_not_findings():
     # An out-of-tree module already there at the baseline: still reported

@@ -22,6 +22,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import urllib.error
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1138,7 +1139,29 @@ def test_only_failing_to_connect_counts_as_offline(web, slow_web):
     assert not redirected.value.offline
     with pytest.raises(FetchError) as slow:
         HttpFetcher(deadline=1.5).get(f"{slow_web}/slow", 1000)  # out of the checker's time
-    assert not slow.value.offline
+    assert not slow.value.offline and not slow.value.starved  # its own time: not first
+
+
+@pytest.mark.parametrize(
+    "error, offline",
+    [
+        (urllib.error.URLError(ConnectionRefusedError()), True),  # connecting
+        (urllib.error.URLError(TimeoutError()), True),  # connecting timed out
+        (TimeoutError(), False),  # reached, but the answer was slow
+        (ConnectionResetError(), False),  # reached, then dropped
+        (urllib.error.URLError("refused a redirect"), False),
+    ],
+)
+def test_offline_is_failing_to_connect_not_a_slow_answer(monkeypatch, error, offline):
+    fetcher = HttpFetcher(deadline=5)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(fetcher.opener, "open", fail)
+    with pytest.raises(FetchError) as raised:
+        fetcher.get("http://127.0.0.1:9/x", 100)  # only this machine, in tests
+    assert raised.value.offline is offline
 
 
 def test_the_run_s_clock_counts_time_in_requests_for_all_servers(web, slow_web):
@@ -1166,8 +1189,9 @@ def test_the_run_s_clock_counts_time_in_requests_for_all_servers(web, slow_web):
     used = idle.used
     fetcher.get(f"{web}/file", 100_000)
     assert idle.used - used < 0.25 and fetcher.started is None
-    with pytest.raises(FetchError, match="verify.seconds_per_run"):
+    with pytest.raises(FetchError, match="verify.seconds_per_run") as cut:
         HttpFetcher(deadline=10, run=clock).get(f"{web}/file", 100_000)  # says which limit
+    assert cut.value.starved  # the run's limit: first next run
     # A request under way counts already: its worker stops reading at the run's end.
     busy = HttpFetcher(deadline=60, run=RunClock(10))
     busy.started = time.monotonic() - 4

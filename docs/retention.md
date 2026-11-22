@@ -83,6 +83,22 @@ again. `--expired` refuses to run without the inventory (`hosts.yaml`
 missing or empty), since it would then treat every host as removed and take
 their baselines; purge a removed host by name instead.
 
+## Downloaded package lists
+
+Checking PAM modules against the distributions' packages (policy §10) keeps
+what it downloads under `cache/` in the tool's folder. These hold no evidence,
+and nothing in them is trusted: each is checked again (signature, hash)
+whenever it is used. Each run clears out what is no longer needed:
+
+- `cache/signed-lists`: a signed list not used for 30 days. Ubuntu's lists
+  change several times a day, so the old ones would otherwise pile up.
+- `cache/official-files`: a note that a package wasn't found, once its day
+  is up. The verified results are kept, since they are small and let an
+  unchanged server be checked without a download.
+- In both folders, a file left half-written for over a day.
+
+A list that is removed costs only a download the next time it's needed.
+
 ## Limits
 
 Purge unlinks files; it doesn't overwrite them. On SSDs and copy-on-write

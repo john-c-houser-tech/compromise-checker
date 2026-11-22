@@ -426,6 +426,13 @@ class Ubuntu:
                 return None
             if max_age is not None and time.time() - info.st_mtime > max_age:
                 return None
+            if max_age is None:
+                # Used: kept another UNUSED_FOR (prune.py). Not for a list
+                # whose time is its age (the archive's InRelease).
+                try:
+                    os.utime(fd)
+                except OSError:
+                    pass  # only means it may be downloaded again
             with os.fdopen(fd, "rb") as handle:
                 fd = None
                 return handle.read(limit)

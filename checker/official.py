@@ -708,6 +708,9 @@ def verifier_for(
     if settings is None or not settings.enabled:
         return None
     from checker.verify import deb
+    from checker.verify.prune import prune_caches
+
+    prune_caches(home)  # at most once a day a folder: cheap for every host
 
     mirrors = {}
     if settings.rocky:

@@ -24,7 +24,18 @@ USER_AGENT = f"compromise-checker/{__version__}"
 
 
 class FetchError(Exception):
-    """A download failed (other than "not there")."""
+    """A download failed (other than "not there"). `offline`: this machine
+    couldn't reach the server at all (no route, no name, refused, a socket
+    timing out), as opposed to running out of the checker's own time or a
+    server's answer: only that tells a run the servers are out of reach."""
+
+    offline = False
+
+
+def _offline(message: str) -> FetchError:
+    error = FetchError(message)
+    error.offline = True
+    return error
 
 
 class Fetcher(Protocol):
@@ -88,11 +99,21 @@ class HttpFetcher:
             left = min(left, self.run.left() - under_way)
         return left
 
+    def out_of_time(self) -> str:
+        """Which limit ran out, for the reason."""
+        own = (self.ends or time.monotonic()) - time.monotonic()
+        if self.run is not None and self.left() < own:
+            return (
+                f"out of time: this run's {self.run.seconds:g} seconds for package downloads"
+                " (verify.seconds_per_run) were used up"
+            )
+        return "out of time for verification"
+
     def get(self, url: str, limit: int, first: int | None = None) -> bytes | None:
         if not url.lower().startswith(("http://", "https://")):
             raise FetchError(f"not a web address: {url[:200]}")
         if self.left() <= 0:
-            raise FetchError("out of time for verification")
+            raise FetchError(self.out_of_time())
         self.started = time.monotonic()
         try:
             return self._timed(url, limit, first)
@@ -114,7 +135,7 @@ class HttpFetcher:
         worker.start()
         worker.join(max(self.left(), 0))
         if worker.is_alive():
-            raise FetchError(f"{url[:200]}: out of time for verification")
+            raise FetchError(f"{url[:200]}: {self.out_of_time()}")
         if "error" in outcome:
             raise outcome["error"]
         return outcome["data"]
@@ -131,7 +152,7 @@ class HttpFetcher:
                 chunks, size = [], 0
                 while size <= limit:
                     if self.left() <= 0:
-                        raise FetchError(f"{url[:200]}: out of time for verification")
+                        raise FetchError(f"{url[:200]}: {self.out_of_time()}")
                     chunk = response.read1(min(65536, limit + 1 - size))
                     if not chunk:
                         break
@@ -145,7 +166,14 @@ class HttpFetcher:
             raise FetchError(f"{url[:200]}: the server answered {exc.code}") from None
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
             reason = getattr(exc, "reason", None) or f"{type(exc).__name__}: {exc}"
-            raise FetchError(f"{url[:200]}: {reason}") from None
+            # URLError is an OSError too: it is the network's only when it
+            # wraps one (a refused redirect is a plain reason).
+            offline = (
+                isinstance(exc.reason, OSError)
+                if isinstance(exc, urllib.error.URLError)
+                else isinstance(exc, OSError)
+            )
+            raise (_offline if offline else FetchError)(f"{url[:200]}: {reason}") from None
         data = b"".join(chunks)
         if first is not None:
             return data[:first]

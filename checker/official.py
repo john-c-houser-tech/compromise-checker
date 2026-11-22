@@ -396,6 +396,7 @@ def _against(
             outcome="not_checked",
             reason=official.reason,
             transient=official.transient,
+            **({"offline": True} if official.offline else {}),
             **_unverified(snapshot, target.path, arch, official.unlisted),
         )
     if target.link_target is not None:
@@ -467,6 +468,8 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
                     # Another package's lookup failed on this side: it may be
                     # the one that ships this file, so it is asked again.
                     found["transient"] = True
+                    if any(r.get("offline") for r in results):
+                        found["offline"] = True
                 return found
     reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
     marks = {}
@@ -482,6 +485,7 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
                     + (f" ({'; '.join(reasons)})" if reasons else "")),
         several=[_who(c) for c in claims],
         transient=any(r.get("transient") for r in results),
+        **({"offline": True} if any(r.get("offline") for r in results) else {}),
         **marks,
     )  # fmt: skip
 
@@ -642,12 +646,13 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Counts by outcome, and the reasons for what wasn't checked."""
     counts: dict[str, int] = {}
     reasons: dict[str, int] = {}
-    owner_unknown = transient = downloaded = 0
+    owner_unknown = transient = offline = downloaded = 0
     unchanged: dict[str, int] = {}
     unchanged_reasons: dict[str, int] = {}
     for result in ((stored or {}).get("files") or {}).values():
         outcome = result.get("outcome", "not_checked")
         transient += bool(result.get("transient"))
+        offline += bool(result.get("offline"))
         downloaded += outcome != "not_checked" and not result.get("cached")
         if result.get("how") == "unchanged":
             # Every module is checked (V.7); the counts and reasons stay the
@@ -675,6 +680,7 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
         "not_checked": reasons,
         "baseline_owner_unknown": owner_unknown,
         "transient": transient,
+        "offline": offline,
         "unchanged": unchanged,
         "unchanged_not_checked": unchanged_reasons,
         "downloaded": downloaded,
@@ -683,12 +689,16 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
 
 def unreachable(assessment: dict[str, Any] | None) -> bool:
     """Whether this host's check found the distributions' servers out of
-    reach: something failed on this machine's side and nothing was checked.
-    A run then stops asking for its other hosts (they are checked next run)."""
+    reach: this machine couldn't connect, and nothing was downloaded. A run
+    then stops asking for its other hosts (they are checked next run).
+
+    Only a failure to connect counts, never running out of time: one host's
+    slow lookups (old versions, dated copies) shouldn't stop the others'.
+    The run's clock (`verify.seconds_per_run`) bounds a slow mirror."""
     found = (assessment or {}).get("official_files") or {}
     # Answers from the cache need no network, so only what was downloaded
     # shows the servers in reach.
-    return bool(found.get("transient")) and not found.get("downloaded")
+    return bool(found.get("offline")) and not found.get("downloaded")
 
 
 OUT_OF_REACH = "not asked: the distributions' servers were out of reach this run"

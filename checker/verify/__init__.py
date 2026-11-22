@@ -70,6 +70,8 @@ class Official:
     # The failure was this machine's (no network, out of time, no gpgv, an
     # error), not the package's: worth asking again later, never stored.
     transient: bool = field(default=False, compare=False)
+    # Of those, this machine couldn't reach the servers at all (FetchError.offline).
+    offline: bool = field(default=False, compare=False)
     # Why the distribution's signed packages can't vouch for it, when the
     # package is the server's own business rather than this machine's or the
     # system's (not covered, a subscription): "package", no such package (a
@@ -187,7 +189,12 @@ class Verifier:
                 self._keep_missing(missing)  # not asked about again for a day
             return missing
         except FetchError as exc:
-            return Official(lookup, reason=f"couldn't download: {exc}", transient=True)
+            return Official(
+                lookup,
+                reason=f"couldn't download: {exc}",
+                transient=True,
+                offline=getattr(exc, "offline", False),
+            )
         official = Official(lookup, files, source, signer)
         self._keep(official)
         return official

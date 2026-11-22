@@ -352,6 +352,13 @@ class Verify(BaseModel):
     # All servers in one run together, counting only time spent waiting on
     # downloads (#217); past it the rest are checked from what is kept here.
     seconds_per_run: int = Field(default=600, ge=60, le=14400)
+
+    @model_validator(mode="after")
+    def _one_server_within_the_run(self):
+        if self.seconds_per_server > self.seconds_per_run:
+            raise ValueError("verify.seconds_per_server can't be more than verify.seconds_per_run")
+        return self
+
     # Versions no longer in the current lists: Ubuntu's dated copies (and
     # Launchpad's record of when a version was published), the Rocky Linux
     # and AlmaLinux vaults. Off: those hosts are never asked, and such a

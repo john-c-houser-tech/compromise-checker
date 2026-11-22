@@ -739,6 +739,15 @@ def test_a_package_not_found_is_not_asked_about_again_for_a_day(pinned, tmp_path
     asked = len(site.asked)
     again = Verifier(tmp_path, fetcher=site).package(ROCKY)
     assert not again.found and again.cached and len(site.asked) == asked
+    assert again.unlisted == "package"  # #224: kept with the marker (the vaults were asked)
+    # A marker made before #224 doesn't say why: asked again, not believed as "listed".
+    marker = next(tmp_path.glob("*.missing"))
+    data = json.loads(marker.read_text())
+    del data["unlisted"]
+    marker.write_text(json.dumps(data))
+    Verifier(tmp_path, fetcher=site).package(ROCKY)
+    assert len(site.asked) > asked
+    asked = len(site.asked)
     import checker.verify as verify
 
     monkeypatch.setattr(verify, "MISSING_FOR", -1)  # a day later
@@ -758,7 +767,7 @@ def test_launchpad_isn_t_asked_about_a_package_ubuntu_doesn_t_have(pinned):
     vendor = Lookup("ubuntu", "24.04", "duo-unix", "2.0.3", "amd64")
     official = ubuntu_verifier(site, ubuntu_snapshot=SNAP, launchpad=LP).package(vendor)
     assert "isn't one of Ubuntu's packages" in official.reason
-    assert official.unlisted is True  # #224: a module credited to it is reported
+    assert official.unlisted == "package"  # #224: a module credited to it is reported
     assert not any(u.startswith(LP) or u.startswith(SNAP) for u in site.asked)
 
 

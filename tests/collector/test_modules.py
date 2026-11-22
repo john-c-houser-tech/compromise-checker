@@ -3752,8 +3752,7 @@ class SystemFilesTests(FixtureRoot):
         records = self.run_with(caps={})
         self.assertEqual(
             records_named(records, "pam_module_owner"),
-            [{"path": unix, "package": "libpam-modules", "several": True,
-              "claims": [{"package": "libpam-modules"}], "odd_claims": 1}],
+            [{"path": unix, "package": "libpam-modules", "odd_claims": 1}],
         )  # fmt: skip
         self.assertTrue(records_named(records, "pam_owners_summary")[0]["complete"])
 
@@ -3776,6 +3775,19 @@ class SystemFilesTests(FixtureRoot):
         summary = records_named(self.run_with(caps={}), "pam_owners_summary")[0]
         self.assertFalse(summary["complete"])
         self.assertIn("couldn't be read whole", summary["problems"][0])
+
+    def test_owners_that_couldn_t_be_loaded_say_why(self):
+        self.fixture()
+        self.write("var/lib/dpkg/info/libpam-modules.list", b"/usr/lib/security/pam_a.so\n")
+        self.present("/usr/lib/security/pam_a.so")
+
+        def broken(*args):
+            raise ValueError("a damaged database")
+
+        summary = records_named(self.run_with(caps={}, package_owners=broken),
+                                "pam_owners_summary")[0]  # fmt: skip
+        self.assertFalse(summary["complete"])
+        self.assertIn("a damaged database", summary["problems"][0])
 
     def test_every_package_listing_a_module_is_sent(self):
         self.fixture()

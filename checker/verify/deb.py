@@ -257,7 +257,9 @@ class Ubuntu:
         `arch` is the package's own architecture: amd64, or all."""
         codename = CODENAMES.get(release)
         if codename is None:
-            raise PackageError(f"Ubuntu {show(release)} isn't covered")
+            uncovered = PackageError(f"Ubuntu {show(release)} isn't covered")
+            uncovered.unlisted = ""  # the whole system: no sign about this package
+            raise uncovered
         if arch not in ARCHES + ("all",):
             raise PackageError(f"{show(arch)} isn't covered yet")
         if "+esm" in version:
@@ -276,7 +278,7 @@ class Ubuntu:
             # PPA's package): Launchpad and the dated copies aren't asked,
             # so its name isn't sent there.
             unknown = PackageError(f"{show(package)} isn't one of Ubuntu's packages")
-            unknown.unlisted = True
+            unknown.unlisted = "package"
             raise unknown
         if hit is None and self.snapshot:
             copies = self._copies(codename, package, version, lists_arch)
@@ -287,7 +289,7 @@ class Ubuntu:
                 f"{show(package)} {show(version)} isn't in Ubuntu's archive{why}"
             )
             missing.transient = bool(problems)  # a list that failed: worth asking again later
-            missing.unlisted = not problems
+            missing.unlisted = "version"
             raise missing
         base, entry, signer = hit
         if entry.size > MAX_DEB:

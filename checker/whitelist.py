@@ -563,6 +563,7 @@ NAMED_ONLY = {
     ("pam.changes", "owners_cut"),
     ("pam.changes", "owners_unread"),
     ("pam.changes", "owner_unverified"),
+    ("pam.changes", "version_unverified"),
 }
 
 

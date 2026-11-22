@@ -320,8 +320,12 @@ BY_VARIANT = {
         "Ask someone to look at the package records on this server. Damaged ones are rare.",
     ),
     ("pam.changes", "owner_unverified"): (
-        "A file in the part of the system that checks passwords belongs, by the server's records, to a package that isn't installed or isn't one of the distribution's signed packages, so it couldn't be checked. Software from another company (such as a login-security vendor) does this honestly; so would someone hiding a tampered file.",
-        "If you know the software that installed it, add a whitelist rule for this file. If not, get advice.",
+        "Files in the part of the system that checks passwords belong, by the server's records, to a package that isn't one of the distribution's signed packages, or isn't properly installed, so they couldn't be checked. Software from another company or an extra repository (a login-security vendor, EPEL) does this honestly, and so does an update left half-finished; so would someone hiding a tampered file.",
+        "If you know the software that installed them, add a whitelist rule for them. If an update was interrupted, finish it. If neither, get advice.",
+    ),
+    ("pam.changes", "version_unverified"): (
+        "Files in the part of the system that checks passwords come from a distribution package whose installed version couldn't be found among the signed packages (an older version than the checker can fetch, an Ubuntu Pro version, or an unusual build), so they weren't checked.",
+        "Update the server's packages; the next check can then compare them.",
     ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",

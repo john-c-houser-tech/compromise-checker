@@ -245,8 +245,7 @@ def _check(
         return not_checked(f"{show(system_id)} isn't covered")
     if _same_release(system) != _same_release(_os(baseline)):
         return not_checked("the system or its release isn't the baseline's")
-    owner = _owner(snapshot, target.path)
-    before = _owner(baseline, target.path)
+    owner, before = _single(_owner(snapshot, target.path)), _single(_owner(baseline, target.path))
 
     def against(claim: dict) -> dict:
         return _against(target, snapshot, baseline, package, seen, previous, base, before, claim)
@@ -256,11 +255,14 @@ def _check(
     if (
         target.how == "unchanged"
         and before is not None
-        and not before.get("several")
+        and (not before.get("several") or before.get("claims"))
         # No owner counts only when this collection recorded them all (a list
         # cut short, or not collected, says nothing about the paths it lacks).
-        and ((owner is None and complete_now) or (owner is not None and owner.get("several"))
-             or (owner is not None and not _same_owner(snapshot, owner, before)))
+        # A baseline several packages listed is left only for one it didn't list.
+        and ((owner is None and complete_now)
+             or (owner is not None and owner.get("several") and not before.get("several"))
+             or (owner is not None and not owner.get("several")
+                 and not any(_same_owner(snapshot, owner, b) for b in _claims(before))))
     ):  # fmt: skip
         # The content is the baseline's but the package records now name
         # another owner (or none, or several): rare when honest, and the way
@@ -315,11 +317,12 @@ def _against(
                 not_checked(
                     "there isn't exactly one installed version of the baseline's owning package"
                 ),
-                unverified=True,
+                unverified="package",
             )
         return dict(
             not_checked("there isn't exactly one installed version of its package"),
-            unverified=True,
+            unverified="package",
+            package=owner["package"],
         )
     _, version, arch = installed
     earlier = _installed(baseline, owner) if _complete(baseline, "packages") else None
@@ -372,13 +375,22 @@ def _against(
             outcome="not_checked",
             reason=official.reason,
             transient=official.transient,
-            **({"unverified": True} if official.unlisted else {}),
+            **({"unverified": official.unlisted} if official.unlisted else {}),
         )
     if target.link_target is not None:
         outcome = _compare_link(official, target, _merged_dirs(snapshot))
     else:
         outcome = compare_file(official, target.path, target.sha256, _merged_dirs(snapshot))
     return dict(result, outcome=outcome, source=official.source, signer=official.signer)
+
+
+def _single(owner: dict[str, Any] | None) -> dict[str, Any] | None:
+    """ "Several" with only one name left once the collector left out names
+    dpkg and rpm never make: that one is the owner (#224's review)."""
+    if owner is not None and owner.get("several") and owner.get("claims"):
+        if len(_claims(owner)) == 1:
+            return dict(owner, several=False)
+    return owner
 
 
 def _claims(owner: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -425,8 +437,11 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
                 return found
     reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
     marks = {}
-    if any(r.get("unverified") for r in results) or owner.get("claims_cut"):
-        marks["unverified"] = True
+    kinds = {r.get("unverified") for r in results}
+    if "package" in kinds or owner.get("claims_cut"):
+        marks["unverified"] = "package"
+    elif "version" in kinds:
+        marks["unverified"] = "version"
     if owner.get("claims_cut"):
         marks["claims_cut"] = True  # more packages list it than the collector sends
     return dict(
@@ -606,7 +621,11 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
             # changed ones', and the unchanged are counted apart.
             unchanged[outcome] = unchanged.get(outcome, 0) + 1
             # (One with an owner change, or reported before, is a finding.)
-            named = "owner_changed" in result or result.get("reported_before")
+            named = (
+                "owner_changed" in result
+                or result.get("reported_before")
+                or result.get("unverified")
+            )
             if outcome in ("not_checked", "ghost") and not named:
                 reason = str(
                     result.get("reason") or "its package lists it as a file made on the server"

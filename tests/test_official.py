@@ -1333,7 +1333,10 @@ def test_a_module_no_package_lists_is_high_whatever_the_unowned_scan_sent():
     assert [(f.band, f.title, f.summary) for f in found] == [
         ("high", "A PAM module that no package installed", f"{OTHER}: no package lists it")
     ]
-    assert owner_findings(pam, {UNIX: owner()}, complete=False) == []  # can't say
+    # Can't say which modules no package lists; the incomplete list is said instead.
+    assert [f.variant for f in owner_findings(pam, {UNIX: owner()}, complete=False)] == [
+        "owners_unread"
+    ]
     # Reported by the unowned scan: once, as before.
     found = owner_findings(pam, {UNIX: owner()}, unowned={OTHER: {}})
     assert len(found) == 1 and found[0].evidence == [{"item": ["unowned_executables", OTHER]}]
@@ -1394,7 +1397,7 @@ def test_a_module_credited_to_a_package_not_in_the_distribution_is_medium():
         def package(self, lookup):
             if lookup.package == "duo-unix":
                 return Official(lookup, reason="'duo-unix' isn't one of Ubuntu's packages",
-                                unlisted=True)  # fmt: skip
+                                unlisted="package")  # fmt: skip
             return super().package(lookup)
 
     packages = {**AFTER["packages"], "duo-unix amd64": {"version": "2.0.3"}}
@@ -1414,7 +1417,7 @@ def test_more_claimants_than_sent_is_high():
 def test_an_odd_owner_record_is_a_module_no_package_installed_even_when_incomplete():
     pam = {UNIX: {"sha256": BAD}, OTHER: {"sha256": GOOD}}
     owners = {UNIX: owner(), OTHER: {"package": None, "arch": None, "several": False, "odd": True}}
-    found = owner_findings(pam, owners, complete=False)
+    found = [f for f in owner_findings(pam, owners, complete=False) if f.variant is None]
     assert [(f.band, f.summary) for f in found] == [
         ("high", f"{OTHER}: its package records name it only with names dpkg and rpm never make")
     ]
@@ -1442,3 +1445,62 @@ def test_snapshot_keeps_odd_owners_and_problems(tmp_path):
     )  # fmt: skip
     found = snapshot_of_records(records, tmp_path).live["pam_owners"]
     assert found["owners"][UNIX]["odd"] is True and found["problems"]
+
+
+# --- #224's third round -----------------------------------------------------------------------
+
+
+def test_one_real_name_left_of_several_is_the_owner():
+    owners = {UNIX: dict(owner(), several=True, claims=[{"package": "libpam-modules",
+                                                         "arch": "amd64"}])}  # fmt: skip
+    assert first_check(owners, FakeVerifier({UNIX: {"sha256": GOOD}}))["outcome"] == "differs"
+
+
+def test_leaving_a_baseline_s_several_owners_for_another_is_an_owner_change():
+    several = claims_owner(("libpam-modules", "amd64"), ("other", "amd64"))
+    before = dict(BEFORE, pam={UNIX: {"sha256": BAD}}, owners={UNIX: several}, packages=TWO)
+    after = dict(before, owners={UNIX: owner("third")})
+    verifier = ByPackage({"libpam-modules": {UNIX: {"sha256": GOOD}}, "other": {}})
+    result = check(before, after, verifier)["files"][UNIX]
+    assert result["owner_changed"]["now"] == {"package": "third", "arch": "amd64"}
+    assert result["outcome"] == "differs"  # held to the baseline's packages
+    # Still one of the baseline's: no change.
+    kept = dict(before, owners={UNIX: owner("other")})
+    assert "owner_changed" not in check(before, kept, verifier)["files"][UNIX]
+
+
+def test_unverified_modules_are_one_finding_per_package_banded_by_kind():
+    paths = [f"/usr/lib/x86_64-linux-gnu/security/pam_{i}.so" for i in range(7)]
+    before = dict(BEFORE, pam={p: {"sha256": BAD} for p in paths},
+                  owners={p: owner("vendor") for p in paths})  # fmt: skip
+    after = dict(before)
+
+    class Answers(FakeVerifier):
+        def __init__(self, kind):
+            super().__init__()
+            self.kind = kind
+
+        def package(self, lookup):
+            return Official(lookup, reason="not there", unlisted=self.kind)
+
+    with_vendor = dict(after, packages={"vendor amd64": {"version": "1"}})
+    with_vendor_before = dict(before, packages=with_vendor["packages"])
+    found = pam_findings(with_vendor_before, with_vendor, Answers("package"))
+    assert [(f.band, f.variant, len(f.entities)) for f in found] == [
+        ("medium", "owner_unverified", 7)
+    ]
+    assert "and 2 more" in found[0].summary
+    found = pam_findings(with_vendor_before, with_vendor, Answers("version"))
+    assert [(f.band, f.variant) for f in found] == [("low", "version_unverified")]
+    # The system as a whole not covered (a subscription, say): nothing new.
+    assert pam_findings(with_vendor_before, with_vendor, Answers("")) == []
+    # Nor are they counted again in the coverage note.
+    baseline, current = snap(**with_vendor_before), snap(**with_vendor)
+    results = official.verify_pam(current, baseline, compare(baseline, current),
+                                  Answers("package"), "b0")  # fmt: skip
+    assert not official.summary(results)["unchanged_not_checked"]
+
+
+def test_owners_unread_says_why_or_that_it_wasn_t_said():
+    found = owner_findings({UNIX: {"sha256": BAD}}, {UNIX: owner()}, complete=False)
+    assert "didn't say why" in found[0].summary

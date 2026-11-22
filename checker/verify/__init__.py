@@ -52,6 +52,9 @@ class Lookup:
     arch: str
 
 
+UNLISTED = ("", "package", "version")
+
+
 @dataclass
 class Official:
     """A package's files as the distribution signed them, or why not."""
@@ -67,9 +70,12 @@ class Official:
     # The failure was this machine's (no network, out of time, no gpgv, an
     # error), not the package's: worth asking again later, never stored.
     transient: bool = field(default=False, compare=False)
-    # The distribution's signed lists have no such package, or not that
-    # version: a vendor's package, or a name or version the server made up.
-    unlisted: bool = field(default=False, compare=False)
+    # Why the distribution's signed packages can't vouch for it, when the
+    # package is the server's own business rather than this machine's or the
+    # system's (not covered, a subscription): "package", no such package (a
+    # vendor's, or a name the server made up); "version", the package but not
+    # that version, architecture or file (an old one, ESM, or a made-up one).
+    unlisted: str = field(default="", compare=False)
 
     @property
     def found(self) -> bool:
@@ -172,7 +178,9 @@ class Verifier:
                 lookup,
                 reason=str(exc),
                 transient=getattr(exc, "transient", False),
-                unlisted=getattr(exc, "unlisted", False) is True,
+                unlisted=(
+                    "" if getattr(exc, "transient", False) else getattr(exc, "unlisted", "version")
+                ),
             )
             if not missing.transient:
                 self._keep_missing(missing)  # not asked about again for a day
@@ -240,11 +248,13 @@ class Verifier:
                 return None
             if time.time() - float(data["at"]) > MISSING_FOR:
                 return None
+            if "unlisted" not in data:
+                return None  # made before #224 said why: asked again
             return Official(
                 lookup,
                 reason=str(data["reason"])[:300],
                 cached=True,
-                unlisted=data.get("unlisted") is True,
+                unlisted=data["unlisted"] if data["unlisted"] in UNLISTED else "",
             )
         except (OSError, ValueError, KeyError, TypeError, RecursionError):
             return None

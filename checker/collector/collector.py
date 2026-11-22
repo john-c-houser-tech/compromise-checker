@@ -5503,6 +5503,9 @@ def module_system_files(run):
             "truncated_reason": cut,
         },
     )
+    if owners_problem:
+        facts = dict(facts or {})
+        facts["problems"] = [f"the package records couldn't be read: {owners_problem}"[:200]]
     record_pam_owners(run, module, owners, owners_complete, facts, links)
     run.check_time()
 
@@ -5518,8 +5521,7 @@ def record_pam_owners(run, module, owners, complete, facts, links):
     left out and the owners called incomplete. The summary always comes, so "no owner
     recorded" is never mistaken for "owned by nothing"."""
     facts = facts or {}
-    arches, contested = facts.get("arches") or {}, facts.get("contested") or set()
-    claims, cut = facts.get("claims") or {}, None
+    arches, claims, cut = facts.get("arches") or {}, facts.get("claims") or {}, None
     dirs = sorted({tuple(canonical_path(p, links).split("/")) for p in PAM_MODULE_DIRS})
     prefixes = tuple(
         "/".join(parts[: next((i for i, x in enumerate(parts) if "*" in x), len(parts))])
@@ -5569,15 +5571,15 @@ def record_pam_owners(run, module, owners, complete, facts, links):
             entry = {"path": file, "package": valid[0][0]}
             if valid[0][1]:
                 entry["arch"] = valid[0][1]
-            if file in contested or len(valid) < len(named):
+            if len(valid) > 1:
                 entry["several"] = True  # more than one package lists it: the owner is a guess
                 entry["claims"] = [
                     {"package": p, **({"arch": a} if a else {})} for p, a in valid[:MAX_CLAIMS]
                 ]
                 if len(claims.get(file, ())) > MAX_CLAIMS:
                     entry["claims_cut"] = True
-                if len(valid) < len(named):
-                    entry["odd_claims"] = len(named) - len(valid)
+            if len(valid) < len(named):
+                entry["odd_claims"] = len(named) - len(valid)
         run.stream.record(module, "pam_module_owner", entry)
         count += 1
     run.stream.record(

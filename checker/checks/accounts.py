@@ -1175,14 +1175,17 @@ def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
                 variant="owners_cut",
             )  # fmt: skip
         )
-    elif owners.get("complete") is not True and owners.get("problems"):
+    elif owners.get("complete") is not True:
+        # (Out of time, a list unreadable, a record dropped: the owner-less
+        # check below can't run, so this is said in its own right.)
         found.append(
             Finding(
                 "pam.changes",
                 "The server's package records couldn't all be read",
                 COMPROMISE,
                 "medium",
-                "; ".join(str(p) for p in owners["problems"]),
+                "; ".join(str(p) for p in owners.get("problems") or [])
+                or "the owner list is incomplete, and the collector didn't say why",
                 [],
                 [],
                 variant="owners_unread",
@@ -1217,31 +1220,50 @@ def _pam_owner_records(context: Context, reported: set[str]) -> list[Finding]:
             )  # fmt: skip
         )
     modules = context.items("pam")
+    groups: dict[tuple, list[str]] = {}
     for path, result in sorted(((context.official or {}).get("files") or {}).items()):
         if (
             not isinstance(result, dict)
             or result.get("how") != "unchanged"
             or path in reported
-            or not result.get("unverified")
+            or result.get("unverified") not in ("package", "version")
             or _held(result)
             or result.get("outcome") != "not_checked"
             or official_result(context, path, modules) is None
         ):
             continue
-        cut = result.get("claims_cut") is True
-        why = str(result.get("reason") or "not checked")
+        key = (
+            result["unverified"],
+            str(result.get("package") or "several packages"),
+            str(result.get("version") or ""),
+            str(result.get("reason") or "not checked"),
+            result.get("claims_cut") is True,
+        )
+        groups.setdefault(key, []).append(path)
+    # One finding per package: one package ships many modules.
+    for (kind, package, version, why, cut), paths in sorted(groups.items()):
         if cut:
             why += "; more packages list it than the collector sends"
+        shown = ", ".join(paths[:5]) + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
+        if kind == "package":
+            title = (
+                f"PAM modules whose package isn't one of {distribution}'s signed packages,"
+                " or isn't installed"
+            )
+            band, variant = ("high" if cut else "medium"), "owner_unverified"
+        else:
+            title = f"PAM modules from {_a(distribution)} package version that couldn't be checked"
+            band, variant = "low", "version_unverified"
         found.append(
             Finding(
                 "pam.changes",
-                f"A PAM module whose package can't be found in {distribution}'s signed packages",
+                title,
                 COMPROMISE,
-                "high" if cut else "medium",
-                f"{path}: {why}",
-                [f"path:{path}"],
-                [{"item": ["pam", path]}],
-                variant="owner_unverified",
+                band,
+                f"{package} {version}".strip() + f": {why}: {len(paths)} file(s): {shown}",
+                [f"path:{p}" for p in paths],
+                [{"item": ["pam", p]} for p in paths],
+                variant=variant,
             )  # fmt: skip
         )
     return found
@@ -1285,6 +1307,7 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "owners_cut",
         "owners_unread",
         "owner_unverified",
+        "version_unverified",
         "added",
         "changed",
     ),  # fmt: skip

@@ -248,7 +248,9 @@ class Rpm:
         config = self.systems.get(system)
         major = release.split(".")[0]
         if config is None or major not in config["keys"]:
-            raise PackageError(f"{show(system)} {show(release)} isn't covered")
+            uncovered = PackageError(f"{show(system)} {show(release)} isn't covered")
+            uncovered.unlisted = ""  # the whole system: no sign about this package
+            raise uncovered
         if arch not in ARCHES:
             raise PackageError(f"{show(arch)} isn't covered yet")
         for part in (package, evr, arch):
@@ -274,7 +276,10 @@ class Rpm:
                 files, signer = check_header(data, config["keys"][major], package, evr, arch)
                 return files, url, signer
         missing = PackageError(f"{package} {evr} isn't in {system}'s repositories")
-        missing.unlisted = True
+        # With the vaults asked too, every version the distribution built is
+        # there: none of them is no such package (an EPEL or vendor one, or a
+        # made-up one); without them, an old version may simply be gone.
+        missing.unlisted = "package" if self.vaults else "version"
         raise missing
 
     def _roots(self, config, major, rel):

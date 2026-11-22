@@ -948,6 +948,8 @@ def _pam_module_finding(context, path, how, fields, result, modules) -> Finding 
     outcome = (result or {}).get("outcome")
     package = f"{(result or {}).get('package')} {(result or {}).get('version')}"
     unsafe = _unsafe(modules.get(path) or {})
+    if _held(result):  # (its mode changed only, or the file came back after a check between)
+        return _held_finding(context, path, result, ref, unsafe)
     if outcome == "matched" and not unsafe:
         older = result.get("older_than_baseline")
         older_seen = result.get("older_than_seen")
@@ -1033,6 +1035,8 @@ def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list
             continue
         package = f"{result.get('package')} {result.get('version')}"
         says = WHAT_THE_PACKAGE_SAYS[outcome].format(package=package)
+        if isinstance(result.get("owner_changed"), dict):
+            says += f" ({_owner_change_words(result['owner_changed'])}; checked as the baseline's)"
         if context.since_baseline is not None:
             when = "unchanged since the baseline: it was already so when the baseline was taken"
         elif context.no_baseline == "no baseline yet":
@@ -1051,6 +1055,91 @@ def _unchanged_modules_that_differ(context: Context, reported: set[str]) -> list
                 variant="differs",
             )  # fmt: skip
         )
+    return found
+
+
+def _owner_words(owner: Any) -> str:
+    if owner == "several":
+        return "more than one package"
+    if not isinstance(owner, dict):
+        return "no package"
+    arch = owner.get("arch")
+    return f"{owner.get('package')}{':' + arch if arch else ''}"
+
+
+def _owner_change_words(change: dict) -> str:
+    return (
+        f"the package records name {_owner_words(change.get('now'))} as its owner,"
+        f" not {_owner_words(change.get('baseline'))} as at the baseline"
+    )
+
+
+def _held(result: Any) -> bool:
+    """A result #217 reports in its own right: an owner change, or a file
+    an earlier check found wasn't its package's that this one doesn't show
+    again (a mismatch now is `differs` as ever)."""
+    return (
+        isinstance(result, dict)
+        and result.get("outcome") not in WHAT_THE_PACKAGE_SAYS
+        and (isinstance(result.get("owner_changed"), dict) or result.get("reported_before") is True)
+    )
+
+
+def _held_finding(context: Context, path: str, result: dict, ref: list, unsafe=None) -> Finding:
+    """An owner change is held to the baseline's owner: medium, high once
+    the file was reported (or when it is dangerous whatever its content); a
+    file reported before and not shown again, high (`differs`), until a
+    check finds it is its package's own."""
+    distribution = _distribution(context)
+    change = result.get("owner_changed") if isinstance(result.get("owner_changed"), dict) else None
+    before = result.get("reported_before") is True
+    outcome = result.get("outcome")
+    whose = "the baseline's owner" if change else "its package"
+    if outcome == "matched":
+        checked = f"it is the file in {whose} {result.get('package')} {result.get('version')}"
+    elif outcome == "ghost":
+        checked = f"{whose} lists it as a file made on the server"
+    else:
+        checked = f"not checked against {whose}: {result.get('reason')}"
+    parts = [_owner_change_words(change)] if change else []
+    parts.append(checked)
+    if before:
+        parts.append(f"an earlier check found it wasn't the file in {distribution}'s package")
+    if unsafe:
+        parts.append(f"it is {unsafe}")
+    if change:
+        title, variant = (
+            "A PAM module's owning package changed, its content didn't",
+            "owner_changed",
+        )
+        new = result.get("new_owner_change") is not False
+    else:
+        title = f"A PAM module found to differ from {distribution}'s package, not checked again"
+        variant, new = "differs", False
+    return Finding(
+        "pam.changes",
+        title,
+        COMPROMISE,
+        "high" if before or unsafe else "medium",
+        f"{path}: " + "; ".join(parts),
+        [f"path:{path}"],
+        ref,
+        new=new or result.get("no_longer_shown") is True,
+        variant=variant,
+    )
+
+
+def _owner_changes(context: Context, reported: set[str]) -> list[Finding]:
+    """Unchanged modules #217 reports (`_held`): how root would hide a module
+    swapped before the baseline. Changed ones are reported by the change's
+    finding, which says the same (`_pam_module_finding`)."""
+    modules = context.items("pam")
+    found = []
+    for path, result in sorted(((context.official or {}).get("files") or {}).items()):
+        if not isinstance(result, dict) or result.get("how") != "unchanged" or path in reported:
+            continue
+        if _held(result) and official_result(context, path, modules) is not None:
+            found.append(_held_finding(context, path, result, [{"item": ["pam", path]}]))
     return found
 
 
@@ -1088,6 +1177,7 @@ def _pam_modules_updated(context: Context, explained: list) -> Finding:
         "new_package",
         "version_unknown",
         "differs",
+        "owner_changed",
         "added",
         "changed",
     ),  # fmt: skip
@@ -1159,6 +1249,7 @@ def pam_changes(context: Context) -> list[Finding]:
         if explained:
             findings.append(_pam_modules_updated(context, explained))
     findings += _unchanged_modules_that_differ(context, reported if diff is not None else set())
+    findings += _owner_changes(context, reported if diff is not None else set())
     for path in context.items("unowned_executables"):
         if "/security/" in path and path.endswith(".so"):
             findings.append(

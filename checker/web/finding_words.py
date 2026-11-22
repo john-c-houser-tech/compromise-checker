@@ -307,6 +307,10 @@ BY_VARIANT = {
         "A file in the part of the system that checks passwords isn't the file the distribution ships for the version installed. Updates don't do that; tampering does.",
         "Treat this as serious: get advice before you change anything on this server.",
     ),
+    ("pam.changes", "owner_changed"): (
+        "A file in the part of the system that checks passwords hasn't changed, but the server's list of installed software now says a different package owns it, or none, or several. Honest updates rarely do that; someone hiding a tampered file might.",
+        "Ask who changed the installed software on this server. If no one can say, get advice before you change anything.",
+    ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
         "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",

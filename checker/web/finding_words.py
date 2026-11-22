@@ -335,6 +335,10 @@ BY_VARIANT = {
         "A file in the part of the system that checks passwords couldn't be checked against the distribution's packages: it was too large, refused, unreadable or out of time, it is a device file, or the directory couldn't be listed whole. The distribution's own modules are small.",
         "If it was out of time and this server is slow, check again. Otherwise ask someone to look at it before changing anything on this server.",
     ),
+    ("pam.changes", "elsewhere"): (
+        "The part of the system that checks passwords loads a module or reads settings from a place other than its own folders, so the checker can't compare them with the distribution's packages. The distribution's own setup never does this; a module built by hand and installed under /usr/local, or a vendor's installer, sometimes does.",
+        "If you know who installed it, add a whitelist rule naming it and this kind of finding. If no one knows, treat it as serious and get advice before changing anything.",
+    ),
     ("process.injected", "replaced"): (
         "A running program is still using a file that an update has since replaced. This is normal after updates, but it keeps running the old code.",
         "Restart it when convenient, unless this page shows signs of a break-in. If it does, get advice first.",

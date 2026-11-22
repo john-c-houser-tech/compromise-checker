@@ -1784,6 +1784,17 @@ class PamTests(FixtureRoot):
         files = [f["path"] for f in records_named(records, "module_file")]
         self.assertEqual(files, ["/usr/lib/security", "/usr/lib/security/pam_unix.so"])
 
+    def test_a_module_directory_that_leads_elsewhere_is_said(self):
+        # #226: a link to another module directory is fine; one elsewhere is said.
+        self.write("var/tmp/x/pam_unix.so", b"\x7fELF")
+        Path(self.root, "usr/lib64").mkdir(parents=True)
+        os.symlink("/var/tmp/x", Path(self.root, "usr/lib64/security"))
+        records = collect(self.root, ["pam"])
+        self.assertEqual(
+            records_named(records, "module_dir_elsewhere"),
+            [{"path": "/usr/lib64/security", "target": "/var/tmp/x"}],
+        )
+
     def test_config_links_never_carry_protected_files(self):
         self.write("etc/passwd", PASSWD.encode())
         self.write("etc/shadow", ("jch:" + SHA512_HASH + ":20000:0:99999:7:::\n").encode())

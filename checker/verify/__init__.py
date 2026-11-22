@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from checker.verify import deb, gpg, rpm
-from checker.verify.fetch import Fetcher, FetchError, HttpFetcher
+from checker.verify.fetch import Fetcher, FetchError, HttpFetcher, RunClock
 from checker.verify.words import show
 
 CACHE_FORMAT = 2  # 2: rpm's %ghost files kept
@@ -70,6 +70,10 @@ class Official:
     # The failure was this machine's (no network, out of time, no gpgv, an
     # error), not the package's: worth asking again later, never stored.
     transient: bool = field(default=False, compare=False)
+    # Of those, this machine couldn't reach the servers at all (FetchError.offline).
+    offline: bool = field(default=False, compare=False)
+    # The run gave this host no (more) time (FetchError.starved).
+    starved: bool = field(default=False, compare=False)
     # Why the distribution's signed packages can't vouch for it, when the
     # package is the server's own business rather than this machine's or the
     # system's (not covered, a subscription): "package", no such package (a
@@ -134,9 +138,10 @@ class Verifier:
         rpm_mirrors: dict[str, dict] | None = None,
         lists_dir: Path | None = None,
         vaults: bool = True,
+        run: RunClock | None = None,
     ):
         self.cache_dir = cache_dir
-        self.fetcher = fetcher or HttpFetcher(deadline)
+        self.fetcher = fetcher or HttpFetcher(deadline, run)
         self.ubuntu = deb.Ubuntu(
             self.fetcher, ubuntu_archive, ubuntu_snapshot or "", launchpad, lists_dir=lists_dir
         )
@@ -186,7 +191,13 @@ class Verifier:
                 self._keep_missing(missing)  # not asked about again for a day
             return missing
         except FetchError as exc:
-            return Official(lookup, reason=f"couldn't download: {exc}", transient=True)
+            return Official(
+                lookup,
+                reason=f"couldn't download: {exc}",
+                transient=True,
+                offline=getattr(exc, "offline", False),
+                starved=getattr(exc, "starved", False),
+            )
         official = Official(lookup, files, source, signer)
         self._keep(official)
         return official

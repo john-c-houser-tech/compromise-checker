@@ -22,6 +22,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import urllib.error
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1119,6 +1120,82 @@ def test_fetcher_deadline_redirects_and_partial(slow_web):
         fetcher.get(f"{slow_web}/to-other", 1000)
     with pytest.raises(FetchError, match="refused a redirect"):
         fetcher.get(f"{slow_web}/to-ftp", 1000)
+
+
+def test_only_failing_to_connect_counts_as_offline(web, slow_web):
+    import socket
+
+    with socket.socket() as spare:
+        spare.bind(("127.0.0.1", 0))
+        port = spare.getsockname()[1]  # closed again: nothing listens there
+    with pytest.raises(FetchError) as refused:
+        HttpFetcher(deadline=5).get(f"http://127.0.0.1:{port}/x", 100)
+    assert refused.value.offline
+    with pytest.raises(FetchError) as answered:
+        HttpFetcher(deadline=5).get(f"{web}/broken", 100)  # a 500: the server is there
+    assert not answered.value.offline
+    with pytest.raises(FetchError) as redirected:
+        HttpFetcher(deadline=5).get(f"{slow_web}/to-other", 100)
+    assert not redirected.value.offline
+    with pytest.raises(FetchError) as slow:
+        HttpFetcher(deadline=1.5).get(f"{slow_web}/slow", 1000)  # out of the checker's time
+    assert not slow.value.offline and not slow.value.starved  # its own time: not first
+
+
+@pytest.mark.parametrize(
+    "error, offline",
+    [
+        (urllib.error.URLError(ConnectionRefusedError()), True),  # connecting
+        (urllib.error.URLError(TimeoutError()), True),  # connecting timed out
+        (TimeoutError(), False),  # reached, but the answer was slow
+        (ConnectionResetError(), False),  # reached, then dropped
+        (urllib.error.URLError("refused a redirect"), False),
+    ],
+)
+def test_offline_is_failing_to_connect_not_a_slow_answer(monkeypatch, error, offline):
+    fetcher = HttpFetcher(deadline=5)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(fetcher.opener, "open", fail)
+    with pytest.raises(FetchError) as raised:
+        fetcher.get("http://127.0.0.1:9/x", 100)  # only this machine, in tests
+    assert raised.value.offline is offline
+
+
+def test_the_run_s_clock_counts_time_in_requests_for_all_servers(web, slow_web):
+    import time
+
+    from checker.verify.fetch import RunClock
+
+    clock = RunClock(1.5)
+    assert HttpFetcher(deadline=10, run=clock).get(f"{web}/file", 100_000) == _Handler.body
+    assert 0 < clock.used < 1
+    started = time.monotonic()
+    with pytest.raises(FetchError, match="out of time"):
+        HttpFetcher(deadline=10, run=clock).get(f"{slow_web}/slow", 1000)  # its own 10 s cut
+    assert time.monotonic() - started < 3
+    assert clock.left() <= 0.05  # the slow request's time counted too
+    asked = len(_Handler.seen)
+    with pytest.raises(FetchError, match="out of time"):
+        HttpFetcher(deadline=10, run=clock).get(f"{web}/file", 100_000)  # the next server
+    assert len(_Handler.seen) == asked  # not asked at all
+    # Time between requests (analysing, other hosts) isn't counted.
+    idle = RunClock(5)
+    fetcher = HttpFetcher(deadline=10, run=idle)
+    fetcher.get(f"{web}/file", 100_000)
+    time.sleep(0.3)
+    used = idle.used
+    fetcher.get(f"{web}/file", 100_000)
+    assert idle.used - used < 0.25 and fetcher.started is None
+    with pytest.raises(FetchError, match="verify.seconds_per_run") as cut:
+        HttpFetcher(deadline=10, run=clock).get(f"{web}/file", 100_000)  # says which limit
+    assert cut.value.starved  # the run's limit: first next run
+    # A request under way counts already: its worker stops reading at the run's end.
+    busy = HttpFetcher(deadline=60, run=RunClock(10))
+    busy.started = time.monotonic() - 4
+    assert busy.left() <= 6
 
 
 @needs_gpgv

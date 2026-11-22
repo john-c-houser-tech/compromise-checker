@@ -7,6 +7,8 @@ baseline, and how the results are stored with the collection and used.
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 from test_snapshot import add_bundle, host_records, rec
 
@@ -15,6 +17,8 @@ from checker.analysis import load_official
 from checker.assess import analyze
 from checker.snapshot import Section, Snapshot, compare
 from checker.verify import Lookup, Official
+
+needs_gpgv = pytest.mark.skipif(shutil.which("gpgv") is None, reason="gpgv isn't installed")
 
 UNIX = "/usr/lib/x86_64-linux-gnu/security/pam_unix.so"
 GOOD, BAD = "a" * 64, "b" * 64
@@ -207,6 +211,8 @@ def test_settings_build_the_verifier(tmp_path):
     from checker.evidence import Verify
 
     assert official.verifier_for(Verify(enabled=False), tmp_path) is None
+    with pytest.raises(ValueError, match="can't be more than verify.seconds_per_run"):
+        Verify(seconds_per_server=120, seconds_per_run=60)
     verifier = official.verifier_for(
         Verify(seconds_per_server=30, rocky="https://m.test/rocky/"), tmp_path
     )
@@ -360,14 +366,37 @@ def test_failures_on_this_machine_s_side_are_marked_and_asked_again():
     class Offline(FakeVerifier):
         def package(self, lookup):
             self.asked.append(lookup)
-            return Official(lookup, reason="couldn't download: no network", transient=True)
+            return Official(
+                lookup, reason="couldn't download: no network", transient=True, offline=True
+            )
+
+    class Slow(FakeVerifier):
+        def package(self, lookup):
+            return Official(lookup, reason="couldn't download: out of time", transient=True)
 
     results = check(BEFORE, AFTER, Offline())
     assert results["files"][UNIX]["transient"] is True
+    assert results["files"][UNIX]["offline"] is True
     assert official.stored_is_current(results, "b0")
     assert not official.stored_is_current(results, "b0", retrying=True)
     assert official.summary(results)["transient"] == 1
     assert official.unreachable({"official_files": official.summary(results)})
+    # Out of time is asked again too, but doesn't stop the run's other hosts.
+    slow = check(BEFORE, AFTER, Slow())
+    assert slow["files"][UNIX]["transient"] is True and "offline" not in slow["files"][UNIX]
+    assert "starved" not in slow["files"][UNIX]
+
+    class Starved(FakeVerifier):
+        def package(self, lookup):
+            return Official(lookup, reason="the run's time", transient=True, starved=True)
+
+    starved = check(BEFORE, AFTER, Starved())
+    assert starved["files"][UNIX]["starved"] is True
+    assert official.summary(starved)["starved"] == 1
+    assert official.unfinished({"official_files": official.summary(starved)})
+    assert not official.unfinished({"official_files": official.summary(slow)})
+    assert not official.stored_is_current(slow, "b0", retrying=True)
+    assert not official.unreachable({"official_files": official.summary(slow)})
     matched = check(BEFORE, AFTER, FakeVerifier({UNIX: {"sha256": BAD}}))
     assert not official.unreachable({"official_files": official.summary(matched)})
     assert not official.unreachable({"official_files": None}) and not official.unreachable(None)
@@ -676,12 +705,49 @@ def test_rocky_and_alma_name_themselves():
         assert titles(found) == [("low", f"PAM modules updated by {name}'s own packages")]
 
 
+@needs_gpgv
 def test_a_run_past_an_unreachable_host_still_answers_from_the_cache(tmp_path):
     from checker.evidence import Verify
 
     cached = official.verifier_for(Verify(), tmp_path, cached_only=True)
     result = cached.package(Lookup("rocky", "9", "pam", "1.5.1-1.el9", "x86_64"))
     assert result.transient and "out of reach this run" in result.reason
+
+
+@needs_gpgv
+def test_a_run_s_download_time_is_shared_and_past_it_the_cache_answers(tmp_path):
+    from checker.evidence import Verify
+    from checker.verify.fetch import HttpFetcher
+
+    settings = Verify(seconds_per_server=30, seconds_per_run=90)
+    clock = official.run_clock(settings)
+    assert clock.seconds == 90 and official.run_clock(Verify(enabled=False)) is None
+    first = official.verifier_for(settings, tmp_path, run=clock)
+    assert isinstance(first.fetcher, HttpFetcher) and first.fetcher.run is clock
+    assert first.fetcher.deadline == 30
+    clock.used = 80  # earlier servers' downloads
+    assert first.fetcher.left() <= 10  # cut to what is left of the run
+    clock.used = 90
+    late = official.verifier_for(settings, tmp_path, run=clock)
+    result = late.package(Lookup("rocky", "9", "pam", "1.5.1-1.el9", "x86_64"))
+    # Marked to be asked again (stored_is_current retries transient results).
+    assert result.transient and not result.found
+    assert "this run's 90 seconds for package downloads" in result.reason
+    assert "verify.seconds_per_run" in result.reason
+    assert result.starved and not result.offline
+    # Out of reach wins its own reason; no clock, no cap.
+    down = official.verifier_for(settings, tmp_path, cached_only=True, run=clock)
+    assert down.package(Lookup("rocky", "9", "pam", "1.5.1-4.el9", "x86_64")).starved
+    assert (
+        "out of reach" in down.package(Lookup("rocky", "9", "pam", "1.5.1-2.el9", "x86_64")).reason
+    )
+    assert official.verifier_for(settings, tmp_path).fetcher.run is None
+    # Past the cap the run's other hosts keep the cap's reason: it isn't
+    # "out of reach", so the breaker never trips on it.
+    for package in ("pam", "pam-libs"):
+        later = official.verifier_for(settings, tmp_path, run=clock)
+        missed = later.package(Lookup("rocky", "9", package, "1.5.1-3.el9", "x86_64"))
+        assert "verify.seconds_per_run" in missed.reason and not missed.offline
 
 
 # --- From V.6's proof on real servers ---------------------------------------------------------
@@ -837,8 +903,9 @@ def test_analyze_catches_a_swapped_module_at_the_first_collection(home):
 
 def test_cache_hits_don_t_hide_servers_out_of_reach():
     summary = {"counts": {"not_checked": 46}, "unchanged": {"matched": 5}, "transient": 46,
-               "downloaded": 0}  # fmt: skip
+               "offline": 46, "downloaded": 0}  # fmt: skip
     assert official.unreachable({"official_files": summary})
+    assert not official.unreachable({"official_files": dict(summary, offline=0)})
     assert not official.unreachable({"official_files": dict(summary, downloaded=1)})
 
     class Cached(FakeVerifier):
@@ -1791,3 +1858,14 @@ def test_continuations_as_linux_pam_joins_them():
     # A blank or comment-only line inside a continuation is skipped, the joining goes on.
     assert pam_lines(["auth required \\", "", "# note", "/tmp/x.so"]) == ["auth required /tmp/x.so"]
     assert pam_lines(["auth\trequired   pam_unix.so"]) == ["auth required pam_unix.so"]
+
+
+def test_hosts_left_unfinished_go_first_the_rest_in_order():
+    assert official.unfinished({"official_files": {"transient": 2, "starved": 2}})
+    # Out of its own time only: not first, that's for hosts the run left out.
+    assert not official.unfinished({"official_files": {"transient": 2, "starved": 0}})
+    assert not official.unfinished({"official_files": {"transient": 0}})
+    assert not official.unfinished({"official_files": None}) and not official.unfinished(None)
+    left = {"c", "e"}
+    order = official.unfinished_first(list("abcde"), left.__contains__)
+    assert order == ["c", "e", "a", "b", "d"]

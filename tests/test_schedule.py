@@ -662,3 +662,32 @@ def test_every_systemctl_user_call_is_given_that_environment(fleet, tmp_path, mo
     assert cli.main(["schedule", "remove"]) == 0
     asked = [env for command, env in given if command[:2] == ["systemctl", "--user"]]
     assert len(asked) >= 5 and all(env == {"XDG_RUNTIME_DIR": "/ours"} for env in asked)
+
+
+def test_hosts_left_unfinished_are_checked_first_next_run(fleet, tmp_path, monkeypatch):
+    # The run's clock for package downloads ran out before web02 last time:
+    # it goes first next run, and the results stay in the inventory's order.
+    import checker.assess as assess
+
+    with inventory_transaction() as hosts:
+        hosts.add(keyed_host(tmp_path, name="web02"))
+    real, order, left = assess.analyze, [], {"web02"}
+
+    def analyze(store, host, *args, **kwargs):
+        order.append(host)
+        found = real(store, host, *args, **kwargs)
+        if host in left:
+            found["official_files"] = {"transient": 3, "starved": 3, "downloaded": 0}
+        return found
+
+    monkeypatch.setattr("checker.assess.analyze", analyze)
+    first = one_run(fleet, collector(fleet, CLEAN))
+    assert order == ["web01", "web02"]
+    order.clear()
+    left.clear()  # web02 finishes this time
+    second = one_run(fleet, collector(fleet, CLEAN))
+    assert order == ["web02", "web01"]
+    assert [h.host for h in first.hosts] == [h.host for h in second.hosts] == ["web01", "web02"]
+    order.clear()
+    one_run(fleet, collector(fleet, CLEAN))
+    assert order == ["web01", "web02"]  # back to the inventory's order

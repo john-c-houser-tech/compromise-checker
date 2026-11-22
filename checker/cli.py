@@ -61,7 +61,7 @@ from checker.inventory import (
     load_inventory,
     new_host_problems,
 )
-from checker.official import unreachable, verifier_for
+from checker.official import run_clock, unfinished, unfinished_first, unreachable, verifier_for
 from checker.purge import execute, expired_count, leftovers, parse_before
 from checker.purge import plan as purge_plan
 from checker.releases import ReleaseError
@@ -2108,21 +2108,53 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         whitelists = {h: _whitelist_for(base, h, inventory) for h in hosts}
         packs_for, _ = _packs_in_force(base, config, inventory)
         verify_down = False  # the distributions' servers out of reach: stop asking
-        for number, host in enumerate(hosts):
-            if number:
+        clock = run_clock(config.verify)  # the run's time for downloads, all hosts
+        order = hosts
+        if clock is not None and len(hosts) > 1:
+            # Those left unfinished last time first, printed in order after.
+            from checker.schedule import latest_assessment
+
+            order = unfinished_first(
+                hosts, lambda h: unfinished(latest_assessment(store, h, identity))
+            )
+        done: dict[str, object] = {}
+        printed = 0
+
+        def show(name: str) -> None:
+            nonlocal status
+            if printed:
                 print()
-            try:
-                prior = prior_for(host, config, inventory)
-                assessment = analyze(
-                    store, host, identity, recipients, args.bundle, prior, whitelists[host],
-                    *packs_for(host),
-                    verifier=verifier_for(config.verify, base, cached_only=verify_down),
-                )  # fmt: skip
-                verify_down = verify_down or unreachable(assessment)
-                _print_assessment(assessment, args)
-            except EvidenceError as exc:
-                print(f"checker: {host}: {exc}", file=sys.stderr)
+            if isinstance(done[name], EvidenceError):
+                print(f"checker: {name}: {done[name]}", file=sys.stderr)
                 status = 1
+            else:
+                _print_assessment(done.pop(name), args)
+
+        try:
+            for host in order:
+                try:
+                    prior = prior_for(host, config, inventory)
+                    done[host] = analyze(
+                        store, host, identity, recipients, args.bundle, prior, whitelists[host],
+                        *packs_for(host),
+                        verifier=verifier_for(
+                            config.verify, base, cached_only=verify_down, run=clock
+                        ),
+                    )  # fmt: skip
+                    verify_down = verify_down or unreachable(done[host])
+                except EvidenceError as exc:
+                    done[host] = exc
+                # Each printed as soon as every host before it is done.
+                while printed < len(hosts) and hosts[printed] in done:
+                    show(hosts[printed])
+                    printed += 1
+        finally:
+            # Stopped part-way (Ctrl-C, a database error): what was done
+            # is still shown, in order.
+            for name in hosts[printed:]:
+                if name in done:
+                    show(name)
+                    printed += 1
     except EvidenceError as exc:
         print(f"checker: {exc}", file=sys.stderr)
         return 1

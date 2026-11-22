@@ -16,6 +16,7 @@ one, and the version exactly one installed package's. Anything else is
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from checker.packs.versions import VersionError, compare
 from checker.snapshot import Snapshot
 from checker.verify import Lookup, Verifier, package_paths
 from checker.verify import compare as compare_file
+from checker.verify.fetch import RunClock
 from checker.verify.words import show
 
 # 2: links checked by their target; 3: every module, not only changed; 4: an unchanged
@@ -394,6 +396,8 @@ def _against(
             outcome="not_checked",
             reason=official.reason,
             transient=official.transient,
+            **({"offline": True} if official.offline else {}),
+            **({"starved": True} if official.starved else {}),
             **_unverified(snapshot, target.path, arch, official.unlisted),
         )
     if target.link_target is not None:
@@ -465,6 +469,9 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
                     # Another package's lookup failed on this side: it may be
                     # the one that ships this file, so it is asked again.
                     found["transient"] = True
+                    for flag in ("offline", "starved"):
+                        if any(r.get(flag) for r in results):
+                            found[flag] = True
                 return found
     reasons = sorted({str(r.get("reason") or r.get("outcome")) for r in results})
     marks = {}
@@ -480,6 +487,7 @@ def _several(target, snapshot, baseline, owner, before, not_checked, against) ->
                     + (f" ({'; '.join(reasons)})" if reasons else "")),
         several=[_who(c) for c in claims],
         transient=any(r.get("transient") for r in results),
+        **{flag: True for flag in ("offline", "starved") if any(r.get(flag) for r in results)},
         **marks,
     )  # fmt: skip
 
@@ -640,12 +648,14 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Counts by outcome, and the reasons for what wasn't checked."""
     counts: dict[str, int] = {}
     reasons: dict[str, int] = {}
-    owner_unknown = transient = downloaded = 0
+    owner_unknown = transient = offline = starved = downloaded = 0
     unchanged: dict[str, int] = {}
     unchanged_reasons: dict[str, int] = {}
     for result in ((stored or {}).get("files") or {}).values():
         outcome = result.get("outcome", "not_checked")
         transient += bool(result.get("transient"))
+        offline += bool(result.get("offline"))
+        starved += bool(result.get("starved"))
         downloaded += outcome != "not_checked" and not result.get("cached")
         if result.get("how") == "unchanged":
             # Every module is checked (V.7); the counts and reasons stay the
@@ -673,6 +683,8 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
         "not_checked": reasons,
         "baseline_owner_unknown": owner_unknown,
         "transient": transient,
+        "offline": offline,
+        "starved": starved,
         "unchanged": unchanged,
         "unchanged_not_checked": unchanged_reasons,
         "downloaded": downloaded,
@@ -681,30 +693,78 @@ def summary(stored: dict[str, Any] | None) -> dict[str, Any]:
 
 def unreachable(assessment: dict[str, Any] | None) -> bool:
     """Whether this host's check found the distributions' servers out of
-    reach: something failed on this machine's side and nothing was checked.
-    A run then stops asking for its other hosts (they are checked next run)."""
+    reach: this machine couldn't connect, and nothing was downloaded. A run
+    then stops asking for its other hosts (they are checked next run).
+
+    Only a failure to connect counts, never running out of time: one host's
+    slow lookups (old versions, dated copies) shouldn't stop the others'.
+    The run's clock (`verify.seconds_per_run`) bounds a slow mirror."""
     found = (assessment or {}).get("official_files") or {}
     # Answers from the cache need no network, so only what was downloaded
     # shows the servers in reach.
-    return bool(found.get("transient")) and not found.get("downloaded")
+    return bool(found.get("offline")) and not found.get("downloaded")
+
+
+OUT_OF_REACH = "not asked: the distributions' servers were out of reach this run"
+
+
+def unfinished(assessment: dict[str, Any] | None) -> bool:
+    """Whether the run cut this host's package lookups short: its clock
+    used up, or the servers found out of reach by an earlier host. Not for
+    a host that used its own `seconds_per_server`: being first is for those
+    the run left out."""
+    found = (assessment or {}).get("official_files") or {}
+    return bool(found.get("starved"))
+
+
+def unfinished_first(hosts: list, was_unfinished) -> list:
+    """The order a run checks its hosts' packages in: those whose last
+    check was left unfinished first, the rest as given. So when the run's
+    clock (`verify.seconds_per_run`) runs out, it isn't the same hosts at
+    the end that go without, run after run."""
+    return sorted(hosts, key=lambda host: not was_unfinished(host))  # stable
 
 
 class _NoDownloads:
     """A fetcher that downloads nothing: what is already cached still answers."""
 
+    def __init__(self, why: str = OUT_OF_REACH):
+        self.why = why
+
     def get(self, url, limit, first=None):
         from checker.verify.fetch import FetchError
 
-        raise FetchError("not asked: the distributions' servers were out of reach this run")
+        error = FetchError(self.why)
+        error.starved = True  # the run gave this host no time
+        raise error
+
+
+def run_clock(settings: Any) -> RunClock | None:
+    """One run's clock for package downloads, shared by its servers
+    (`verify.seconds_per_run`), or None when verification is off."""
+    if settings is None or not settings.enabled:
+        return None
+    return RunClock(settings.seconds_per_run)
 
 
 def verifier_for(
-    settings: Any, home: Path, deadline: float | None = None, cached_only: bool = False
+    settings: Any,
+    home: Path,
+    deadline: float | None = None,
+    cached_only: bool = False,
+    run: RunClock | None = None,
 ) -> Verifier | None:
     """The Verifier the settings ask for (`verify` in the configuration),
     or None when it is turned off. `cached_only`: answers only from what is
     already kept here (a run whose earlier host found the servers out of
-    reach), its misses marked to be asked again."""
+    reach), its misses marked to be asked again. `run`: the run's clock
+    (`run_clock`); once it is used up, the same, with its own reason."""
+    from checker.verify.prune import prune_caches
+
+    # Also when turned off: what an earlier run kept still goes. At most
+    # once a day a folder, so cheap for every host; tidying never stops a check.
+    with contextlib.suppress(Exception):
+        prune_caches(home)
     if settings is None or not settings.enabled:
         return None
     from checker.verify import deb
@@ -715,9 +775,15 @@ def verifier_for(
     if settings.almalinux:
         mirrors["almalinux"] = {"current": settings.almalinux.rstrip("/") + "/{major}"}
     older = settings.older_versions
+    fetcher = _NoDownloads() if cached_only else None
+    if fetcher is None and run is not None and run.left() <= 0:
+        fetcher = _NoDownloads(
+            f"not asked: this run's {run.seconds:g} seconds for package downloads"
+            " (verify.seconds_per_run) were used up"
+        )
     return Verifier(
         home / "cache" / "official-files",
-        fetcher=_NoDownloads() if cached_only else None,
+        fetcher=fetcher,
         deadline=deadline if deadline is not None else settings.seconds_per_server,
         ubuntu_archive=settings.ubuntu_archive or deb.ARCHIVE,
         ubuntu_snapshot=deb.SNAPSHOT if older else None,
@@ -725,4 +791,5 @@ def verifier_for(
         lists_dir=home / "cache" / "signed-lists",
         rpm_mirrors=mirrors or None,
         vaults=older,
+        run=run,
     )

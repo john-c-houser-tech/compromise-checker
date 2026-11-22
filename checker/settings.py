@@ -163,7 +163,8 @@ def _verify_line(config: Config) -> str:
             else " from the distributions' own servers"
         )
         + older
-        + f"; {verify.seconds_per_server} seconds a server at most"
+        + f"; {verify.seconds_per_server} seconds a server and"
+        f" {verify.seconds_per_run} seconds a run at most"
     )
 
 
@@ -368,6 +369,12 @@ SETTABLE: dict[str, Setting] = {
             ("verify", "seconds_per_server"),
             int,
             "the time that check gets for each server (default 60)",
+        ),
+        Setting(
+            ("verify", "seconds_per_run"),
+            int,
+            "the time that check gets for all servers in one run together, counting only"
+            " time spent downloading (default 600)",
         ),
         Setting(
             ("verify", "older_versions"),

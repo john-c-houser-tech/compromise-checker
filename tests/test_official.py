@@ -1845,3 +1845,12 @@ def test_continuations_as_linux_pam_joins_them():
     # A blank or comment-only line inside a continuation is skipped, the joining goes on.
     assert pam_lines(["auth required \\", "", "# note", "/tmp/x.so"]) == ["auth required /tmp/x.so"]
     assert pam_lines(["auth\trequired   pam_unix.so"]) == ["auth required pam_unix.so"]
+
+
+def test_hosts_left_unfinished_go_first_the_rest_in_order():
+    assert official.unfinished({"official_files": {"transient": 2}})
+    assert not official.unfinished({"official_files": {"transient": 0}})
+    assert not official.unfinished({"official_files": None}) and not official.unfinished(None)
+    left = {"c", "e"}
+    order = official.unfinished_first(list("abcde"), left.__contains__)
+    assert order == ["c", "e", "a", "b", "d"]

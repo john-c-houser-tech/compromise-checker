@@ -292,8 +292,12 @@ def remembered(
         if pack in known:
             exposed[pack] = known[pack]
     in_effect = [f for f in assessment.get("findings") or [] if not f.get("suppressed_by")]
+    from checker.official import unfinished
+
     return {
         "band": _band(assessment),
+        # Package lookups left to ask again: the host goes first next run.
+        "unfinished": unfinished(assessment),
         "exposed": exposed,
         "findings": {_identity_of(f): f.get("band") for f in in_effect},
         "weighed": sorted(_identity_of(f) for f in in_effect if f.get("raised_by_pack")),
@@ -527,7 +531,7 @@ def run(
     from checker.collect import collect_hosts
     from checker.credentials import password_for
     from checker.evidence import Store, database_file
-    from checker.official import run_clock, unreachable, verifier_for
+    from checker.official import run_clock, unfinished_first, unreachable, verifier_for
     from checker.packs.choice import for_host
     from checker.packs.store import in_force
     from checker.report import visible, write_report
@@ -607,7 +611,12 @@ def run(
             analysed = []
             verify_down = False  # the distributions' servers out of reach: stop asking
             clock = run_clock(config.verify)  # the run's time for downloads, all hosts
-            for host in hosts:
+            # Those left unfinished last time first; the results in the
+            # inventory's order again afterwards.
+            order = {host.name: number for number, host in enumerate(hosts)}
+            for host in unfinished_first(
+                hosts, lambda h: bool((before.get(h.name) or {}).get("unfinished"))
+            ):
                 outcome = by_host.get(host.name)
                 item = HostResult(host.name, outcome.status if outcome else "not run")
                 result.hosts.append(item)
@@ -657,6 +666,8 @@ def run(
                         f": {visible(outcome.error, 300)}" if outcome.error else ""
                     )
                     item.alerts.append(f"{host.name}: collected in part ({outcome.status})")
+            result.hosts.sort(key=lambda item: order[item.host])
+            analysed.sort(key=order.__getitem__)
             if analysed:
                 try:
                     result.report = write_report(

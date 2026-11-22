@@ -704,6 +704,21 @@ def unreachable(assessment: dict[str, Any] | None) -> bool:
 OUT_OF_REACH = "not asked: the distributions' servers were out of reach this run"
 
 
+def unfinished(assessment: dict[str, Any] | None) -> bool:
+    """Whether this host's check left package lookups to ask again (out of
+    the run's or its own time, or the servers out of reach)."""
+    found = (assessment or {}).get("official_files") or {}
+    return bool(found.get("transient"))
+
+
+def unfinished_first(hosts: list, was_unfinished) -> list:
+    """The order a run checks its hosts' packages in: those whose last
+    check was left unfinished first, the rest as given. So when the run's
+    clock (`verify.seconds_per_run`) runs out, it isn't the same hosts at
+    the end that go without, run after run."""
+    return sorted(hosts, key=lambda host: not was_unfinished(host))  # stable
+
+
 class _NoDownloads:
     """A fetcher that downloads nothing: what is already cached still answers."""
 

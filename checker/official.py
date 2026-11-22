@@ -27,6 +27,7 @@ from checker.packs.versions import VersionError, compare
 from checker.snapshot import Snapshot
 from checker.verify import Lookup, Verifier, package_paths
 from checker.verify import compare as compare_file
+from checker.verify.fetch import RunClock
 from checker.verify.words import show
 
 # 2: links checked by their target; 3: every module, not only changed; 4: an unchanged
@@ -690,22 +691,41 @@ def unreachable(assessment: dict[str, Any] | None) -> bool:
     return bool(found.get("transient")) and not found.get("downloaded")
 
 
+OUT_OF_REACH = "not asked: the distributions' servers were out of reach this run"
+
+
 class _NoDownloads:
     """A fetcher that downloads nothing: what is already cached still answers."""
+
+    def __init__(self, why: str = OUT_OF_REACH):
+        self.why = why
 
     def get(self, url, limit, first=None):
         from checker.verify.fetch import FetchError
 
-        raise FetchError("not asked: the distributions' servers were out of reach this run")
+        raise FetchError(self.why)
+
+
+def run_clock(settings: Any) -> RunClock | None:
+    """One run's clock for package downloads, shared by its servers
+    (`verify.seconds_per_run`), or None when verification is off."""
+    if settings is None or not settings.enabled:
+        return None
+    return RunClock(settings.seconds_per_run)
 
 
 def verifier_for(
-    settings: Any, home: Path, deadline: float | None = None, cached_only: bool = False
+    settings: Any,
+    home: Path,
+    deadline: float | None = None,
+    cached_only: bool = False,
+    run: RunClock | None = None,
 ) -> Verifier | None:
     """The Verifier the settings ask for (`verify` in the configuration),
     or None when it is turned off. `cached_only`: answers only from what is
     already kept here (a run whose earlier host found the servers out of
-    reach), its misses marked to be asked again."""
+    reach), its misses marked to be asked again. `run`: the run's clock
+    (`run_clock`); once it is used up, the same, with its own reason."""
     from checker.verify.prune import prune_caches
 
     # Also when turned off: what an earlier run kept still goes. At most
@@ -722,9 +742,15 @@ def verifier_for(
     if settings.almalinux:
         mirrors["almalinux"] = {"current": settings.almalinux.rstrip("/") + "/{major}"}
     older = settings.older_versions
+    fetcher = _NoDownloads() if cached_only else None
+    if fetcher is None and run is not None and run.left() <= 0:
+        fetcher = _NoDownloads(
+            f"not asked: this run's {run.seconds:g} seconds for package downloads"
+            " (verify.seconds_per_run) were used up"
+        )
     return Verifier(
         home / "cache" / "official-files",
-        fetcher=_NoDownloads() if cached_only else None,
+        fetcher=fetcher,
         deadline=deadline if deadline is not None else settings.seconds_per_server,
         ubuntu_archive=settings.ubuntu_archive or deb.ARCHIVE,
         ubuntu_snapshot=deb.SNAPSHOT if older else None,
@@ -732,4 +758,5 @@ def verifier_for(
         lists_dir=home / "cache" / "signed-lists",
         rpm_mirrors=mirrors or None,
         vaults=older,
+        run=run,
     )

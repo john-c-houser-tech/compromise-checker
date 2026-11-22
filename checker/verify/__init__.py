@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from checker.verify import deb, gpg, rpm
-from checker.verify.fetch import Fetcher, FetchError, HttpFetcher
+from checker.verify.fetch import Fetcher, FetchError, HttpFetcher, RunClock
 from checker.verify.words import show
 
 CACHE_FORMAT = 2  # 2: rpm's %ghost files kept
@@ -134,9 +134,10 @@ class Verifier:
         rpm_mirrors: dict[str, dict] | None = None,
         lists_dir: Path | None = None,
         vaults: bool = True,
+        run: RunClock | None = None,
     ):
         self.cache_dir = cache_dir
-        self.fetcher = fetcher or HttpFetcher(deadline)
+        self.fetcher = fetcher or HttpFetcher(deadline, run)
         self.ubuntu = deb.Ubuntu(
             self.fetcher, ubuntu_archive, ubuntu_snapshot or "", launchpad, lists_dir=lists_dir
         )

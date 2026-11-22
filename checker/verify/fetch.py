@@ -48,29 +48,60 @@ class _SameHost(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class RunClock:
+    """The time a whole run's servers may spend waiting on downloads, all
+    together (`verify.seconds_per_run`, #217). Only time inside requests
+    counts: collecting and analysing don't, so a large fleet doesn't use it
+    up by being large."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.used = 0.0
+
+    def left(self) -> float:
+        return self.seconds - self.used
+
+
 class HttpFetcher:
-    """Fetcher over HTTP and HTTPS, with one overall deadline for the run.
+    """Fetcher over HTTP and HTTPS, with one overall deadline for the
+    server it checks, and the run's clock (if any) shared with the others.
 
     Each request runs in a worker thread that is given up on at the
     deadline, so a server that is slow to connect or to send its headers
     can't hold the run past it (the thread itself ends at its socket
     timeout)."""
 
-    def __init__(self, deadline: float = 60.0):
+    def __init__(self, deadline: float = 60.0, run: RunClock | None = None):
         self.deadline = deadline
+        self.run = run
         self.ends: float | None = None  # set at the first download, not before
+        self.started: float | None = None  # the request under way, if one is
         self.opener = urllib.request.build_opener(_SameHost())
 
     def left(self) -> float:
+        now = time.monotonic()
         if self.ends is None:
-            self.ends = time.monotonic() + self.deadline
-        return self.ends - time.monotonic()
+            self.ends = now + self.deadline
+        left = self.ends - now
+        if self.run is not None:
+            under_way = now - self.started if self.started is not None else 0.0
+            left = min(left, self.run.left() - under_way)
+        return left
 
     def get(self, url: str, limit: int, first: int | None = None) -> bytes | None:
         if not url.lower().startswith(("http://", "https://")):
             raise FetchError(f"not a web address: {url[:200]}")
         if self.left() <= 0:
             raise FetchError("out of time for verification")
+        self.started = time.monotonic()
+        try:
+            return self._timed(url, limit, first)
+        finally:
+            if self.run is not None:
+                self.run.used += time.monotonic() - self.started
+            self.started = None
+
+    def _timed(self, url: str, limit: int, first: int | None) -> bytes | None:
         outcome: dict = {}
 
         def work():

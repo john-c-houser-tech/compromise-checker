@@ -527,7 +527,7 @@ def run(
     from checker.collect import collect_hosts
     from checker.credentials import password_for
     from checker.evidence import Store, database_file
-    from checker.official import unreachable, verifier_for
+    from checker.official import run_clock, unreachable, verifier_for
     from checker.packs.choice import for_host
     from checker.packs.store import in_force
     from checker.report import visible, write_report
@@ -606,6 +606,7 @@ def run(
             by_host = {o.host: o for o in outcomes}
             analysed = []
             verify_down = False  # the distributions' servers out of reach: stop asking
+            clock = run_clock(config.verify)  # the run's time for downloads, all hosts
             for host in hosts:
                 outcome = by_host.get(host.name)
                 item = HostResult(host.name, outcome.status if outcome else "not run")
@@ -634,9 +635,12 @@ def run(
                         prior_for(host.name, config, inventory),
                         whitelist_for_host(base, host.name, inventory),
                         *packs_for(host.name),
-                        # Each host its own time, the caches shared; none once the
-                        # distributions' servers proved out of reach this run.
-                        verifier=verifier_for(config.verify, base, cached_only=verify_down),
+                        # Each host its own time, the caches and the run's time
+                        # shared; none once the distributions' servers proved out
+                        # of reach this run.
+                        verifier=verifier_for(
+                            config.verify, base, cached_only=verify_down, run=clock
+                        ),
                     )
                     verify_down = verify_down or unreachable(assessment)
                 except Exception as exc:  # noqa: BLE001 - one host's trouble isn't the others'

@@ -349,6 +349,9 @@ class Verify(BaseModel):
 
     enabled: bool = True
     seconds_per_server: int = Field(default=60, ge=5, le=900)
+    # All servers in one run together, counting only time spent waiting on
+    # downloads (#217); past it the rest are checked from what is kept here.
+    seconds_per_run: int = Field(default=600, ge=60, le=14400)
     # Versions no longer in the current lists: Ubuntu's dated copies (and
     # Launchpad's record of when a version was published), the Rocky Linux
     # and AlmaLinux vaults. Off: those hosts are never asked, and such a

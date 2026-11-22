@@ -684,6 +684,33 @@ def test_a_run_past_an_unreachable_host_still_answers_from_the_cache(tmp_path):
     assert result.transient and "out of reach this run" in result.reason
 
 
+def test_a_run_s_download_time_is_shared_and_past_it_the_cache_answers(tmp_path):
+    from checker.evidence import Verify
+    from checker.verify.fetch import HttpFetcher
+
+    settings = Verify(seconds_per_server=30, seconds_per_run=90)
+    clock = official.run_clock(settings)
+    assert clock.seconds == 90 and official.run_clock(Verify(enabled=False)) is None
+    first = official.verifier_for(settings, tmp_path, run=clock)
+    assert isinstance(first.fetcher, HttpFetcher) and first.fetcher.run is clock
+    assert first.fetcher.deadline == 30
+    clock.used = 80  # earlier servers' downloads
+    assert first.fetcher.left() <= 10  # cut to what is left of the run
+    clock.used = 90
+    late = official.verifier_for(settings, tmp_path, run=clock)
+    result = late.package(Lookup("rocky", "9", "pam", "1.5.1-1.el9", "x86_64"))
+    # Marked to be asked again (stored_is_current retries transient results).
+    assert result.transient and not result.found
+    assert "this run's 90 seconds for package downloads" in result.reason
+    assert "verify.seconds_per_run" in result.reason
+    # Out of reach wins its own reason; no clock, no cap.
+    down = official.verifier_for(settings, tmp_path, cached_only=True, run=clock)
+    assert (
+        "out of reach" in down.package(Lookup("rocky", "9", "pam", "1.5.1-2.el9", "x86_64")).reason
+    )
+    assert official.verifier_for(settings, tmp_path).fetcher.run is None
+
+
 # --- From V.6's proof on real servers ---------------------------------------------------------
 
 

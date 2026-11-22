@@ -180,7 +180,9 @@ The firewall limits only what comes in. Going out, the tool itself reaches:
   AlmaLinux's repositories and vaults). `verify.enabled` turns this off, and `verify.older_versions` keeps
   it to the current lists. `verify.ubuntu_archive`, `verify.rocky` and `verify.almalinux` name your own
   mirrors for the current lists; the dated copies, Launchpad and the vaults are still asked unless
-  `verify.older_versions` is off;
+  `verify.older_versions` is off. Downloads get 60 seconds a server (`verify.seconds_per_server`) and
+  600 seconds a run for all servers together (`verify.seconds_per_run`); past those, what wasn't
+  downloaded is reported as not checked and asked about again on the next run;
 - GitHub, once a day, for the list of the tool's releases (`updates.check` turns it off), and GitHub and
   PyPI when an update is installed;
 - Let's Encrypt, if you gave a web address;

@@ -124,11 +124,13 @@ def verify_pam(
             asked[lookup] = verifier.package(lookup)
         return asked[lookup]
 
-    # The previous check's results (the baseline's own too, when it was the
-    # previous), for what it had reported.
-    earlier_files = ((reported if reported is not None else previous_results) or {}).get(
-        "files"
-    ) or {}
+    # The last stored results (the baseline's own too), for what earlier
+    # checks had found: each file (path and hash) once found not to be its
+    # package's, kept from check to check whatever comes between (#217's
+    # reviews), until that very file matches its package.
+    last = reported if reported is not None else previous_results
+    earlier_files = (last or {}).get("files") or {}
+    mismatched = _mismatched(last)
     for target in targets(snapshot, since_baseline, every=True):
         try:
             files[target.path] = _check(target, snapshot, baseline, package, seen, previous)
@@ -140,24 +142,50 @@ def verify_pam(
                 "sha256": target.sha256,
                 **({"link_target": target.link_target} if target.link_target else {}),
             }
-        _mark_reported(files[target.path], target, earlier_files.get(target.path))
+        _mark_reported(files[target.path], target, earlier_files.get(target.path), mismatched)
     return {
         "version": OFFICIAL_VERSION,
         "baseline_id": baseline_id,
         "checked_at": datetime.now(UTC).isoformat(),
         "files": files,
+        "mismatched": {path: sorted(keys) for path, keys in sorted(mismatched.items()) if keys},
     }
 
 
-def _mark_reported(result: dict[str, Any], target: Target, earlier: Any) -> None:
-    """Marks an unchanged module the previous check had found wasn't its
-    package's file (or had marked so), when this check doesn't show it
-    again: whatever the server changes in its records (owner, package list,
-    version, release) to make it "not checked" now, it stays reported until
-    the file itself changes (#217's reviews). `new_owner_change`: an owner
-    change the previous check hadn't seen."""
-    if result.get("how") != "unchanged":
-        return
+MAX_MISMATCHED_PER_PATH = 20  # the server picks the hashes: kept bounded
+
+
+def _key(sha256: Any, link_target: Any) -> str | None:
+    if isinstance(sha256, str) and sha256:
+        return sha256
+    return f"link:{link_target}" if isinstance(link_target, str) and link_target else None
+
+
+def _mismatched(last: dict[str, Any] | None) -> dict[str, set[str]]:
+    """{path: the files (hash, or "link:" and target) found there not to be
+    their package's}: those the last results carried, and their own."""
+    found: dict[str, set[str]] = {}
+    carried = (last or {}).get("mismatched")
+    for path, keys in carried.items() if isinstance(carried, dict) else ():
+        if isinstance(path, str) and isinstance(keys, list):
+            found[path] = {k for k in keys if isinstance(k, str)}
+    for path, result in ((last or {}).get("files") or {}).items():
+        if isinstance(result, dict) and result.get("outcome") in MISMATCHES:
+            key = _key(result.get("sha256"), result.get("link_target"))
+            if isinstance(path, str) and key:
+                found.setdefault(path, set()).add(key)
+    return found
+
+
+def _mark_reported(
+    result: dict[str, Any], target: Target, earlier: Any, mismatched: dict[str, set[str]]
+) -> None:
+    """Marks a module whose very file an earlier check found wasn't its
+    package's, when this check doesn't show it again: whatever the server
+    changes in its records (owner, package list, version, release) to make
+    it "not checked", or however it hides it for a check between, it stays
+    reported. A match for that file clears it; a mismatch now is reported as
+    such. `new_owner_change`: an owner change the last check hadn't seen."""
     same = (
         isinstance(earlier, dict)
         and earlier.get("sha256") == target.sha256
@@ -165,14 +193,24 @@ def _mark_reported(result: dict[str, Any], target: Target, earlier: Any) -> None
     )
     if "owner_changed" in result:
         result["new_owner_change"] = not (same and "owner_changed" in earlier)
-    if (
-        same
-        and result.get("outcome") not in MISMATCHES
-        and (earlier.get("outcome") in MISMATCHES or earlier.get("reported_before") is True)
-    ):
-        result["reported_before"] = True
-        # The first check that doesn't show it again (later ones carry the mark).
-        result["no_longer_shown"] = earlier.get("outcome") in MISMATCHES
+    key = _key(target.sha256, target.link_target)
+    keys = mismatched.setdefault(target.path, set())
+    outcome = result.get("outcome")
+    if key is None:
+        return
+    if outcome in MISMATCHES:
+        if key not in keys and len(keys) >= MAX_MISMATCHED_PER_PATH:
+            keys.discard(sorted(keys)[0])
+        keys.add(key)
+    elif key in keys:
+        if outcome == "matched":
+            keys.discard(key)  # the package's own file for the version installed
+        else:
+            result["reported_before"] = True
+            # The first check that doesn't show it again (later ones carry the mark).
+            result["no_longer_shown"] = (
+                same and earlier.get("outcome") in MISMATCHES
+            ) or not isinstance(earlier, dict)
 
 
 def _check(

@@ -120,6 +120,22 @@ judge", never "fixed".
   exposed, treat whatever the web account could read as disclosed: REDCap's database password and
   salt in `database.php`, and the project data.
 
+### Confirmed in REDCap's changelog (2026-11-26)
+
+- **The fix:** 16.0.49 LTS, 17.3.10 LTS and 17.4.4 Standard, all released **2026-09-09**, each
+  with the same "Critical security fix" for an unauthenticated remote code execution in "the
+  survey passthrough routing", needing "a valid survey hash", in "REDCap 13.3.0 and higher". These
+  are the CVE record's three versions. 13.3.0 came out on 2023-02-02.
+- **No other line got it.** The lines released from June 2026 on were 16.0 LTS, 17.1, 17.2 and
+  17.3 Standard (17.3.0 to 17.3.4), 17.3 LTS (from 17.3.5), and 17.4, 17.5 and 17.6 Standard.
+  17.1 and 17.2 had stopped before September. 17.5.0 (2026-09-17) and later came after the fix.
+  So the three entries above judge every line correctly: `17.3.*` covers the Standard 17.3.0 to
+  17.3.4 builds too, and `*` reads 17.5 and 17.6 as fixed.
+- **A follow-up worth telling admins:** the next releases (16.0.51, 17.3.12 and 17.4.6, on
+  2026-09-14) added a Control Center page to repair image and file links that a security change
+  in the fixed versions had broken. The remediation should say to go to the newest release on the
+  line, not just the first fixed one.
+
 ## Open decisions
 
 1. **The format change.** An optional `applications` list beside `packages`, keeping `format: 1`,
@@ -169,6 +185,8 @@ judge", never "fixed".
 
 ## Sources
 
+- REDCap's changelog (REDCap Community, partner login): the 2026-09-09 entries for 16.0.49,
+  17.3.10 and 17.4.4, and the release history of each line.
 - CVE record, CVE-2026-90817 (affected from 13.3.0; fixed in 16.0.49 LTS, 17.3.10 LTS, 17.4.4
   Standard): https://www.cve.org/CVERecord?id=CVE-2026-90817
 - Unit 42, "Exploitation of CVE-2026-90817 for evasive cryptocurrency mining campaign",

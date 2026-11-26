@@ -1,7 +1,7 @@
 # Judging exposure by an application's version, for REDCap (2026-11-26)
 
-Draft 1. Decisions 1–6 settled 2026-11-26; decision 7 (from A.1) is open. Nothing is built until
-John has settled it.
+Draft 1. All seven decisions settled 2026-11-26. Steps A.2 onward follow, one pull request each,
+each for John to merge.
 
 ## The problem
 
@@ -193,9 +193,12 @@ A fake REDCap tree on the laptop (tmpfs, warm cache), collected by the collector
    (a) walk folders whose names look like version folders before the rest of a web root, so a
    cut-short walk still has them; or (b) stop counting a folder's files toward the limit once it
    has held, say, 1,000 files with no script among them, still counting them in `not_listed`.
-   **Recommended: (a),** in A.2. It's small, it changes no limits, and it keeps the rule that a
-   partial walk is reported as partial. The coverage note would also suggest moving `edocs/` out
-   of the web root, which keeps uploads out of reach of the web server anyway.
+   **DECIDED 2026-11-26 (John): (a),** in A.2. It's small, it changes no limits, and it keeps the
+   rule that a partial walk is reported as partial. The collector has no application built in:
+   the checker sends the `folder` patterns of the packs in force (`redcap_v*`) in the collection
+   settings, and the collector walks the matching folders in each web root first. With no such
+   pack, the walk is as today. The coverage note also suggests moving `edocs/` out of the web
+   root, which keeps uploads out of reach of the web server anyway.
 
 ## Steps (one pull request each, after the decisions)
 

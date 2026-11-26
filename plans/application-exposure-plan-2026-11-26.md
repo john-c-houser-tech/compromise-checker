@@ -207,9 +207,14 @@ A fake REDCap tree on the laptop (tmpfs, warm cache), collected by the collector
   write-up or from a REDCap administrator, never from an unlicensed copy). Collect it on the
   laptop, then time the web-root walk. Results go in this plan.
 - **A.2 Format and judging:** `applications` in `format.py` (validation, dotted versions,
-  `affected_from`, the most-specific rule), the install finder and judging in `exposure.py`, and
-  the arrival time. Tests on synthetic bundles: every line before and after its fix, an unfinished
-  upgrade, two installs on one server, an unparsable folder name, a pack with only applications.
+  `affected_from`, the most-specific rule, ties refused), the install finder and judging in
+  `exposure.py`, and the arrival time. A web root whose walk wasn't whole gives its installs
+  "can't judge" (A.1). The walk order (decision 7): the packs' `folder` patterns go in the
+  collection settings, and the collector walks matching folders first, older checkers' settings
+  unchanged. Tests on synthetic bundles: every line before and after its fix, an unfinished
+  upgrade, two installs on one server, an unparsable folder name, a pack with only applications,
+  a cut-short walk; and a collector test that a full `edocs/` no longer hides the version
+  folders.
 - **A.3 Report and docs:** installs in the report, JSON and web UI beside packages, the coverage
   notes, and `docs/packs.md` (the format, with the REDCap example).
 - **A.4 Checker release 0.1.7** (John), so pulls can read the new field.

@@ -435,6 +435,14 @@ def test_an_analysis_reports_a_vulnerable_install(home):
     assert f"REDCap 17.3.9 at {SITE}: before the fix 17.3.10" in finding["summary"]
     assert any("running version is read from the newest version folder" in g
                for g in assessment["coverage"]["gaps"])  # fmt: skip
+    (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
+    (install,) = record["applications"]
+    assert install == {
+        "name": "REDCap", "path": SITE, "version": "17.3.9", "status": VULNERABLE,
+        "fixed": "17.3.10", "why": "before the fix 17.3.10", "versions_seen": ["17.3.9"],
+        "fixed_since": None,
+    }  # fmt: skip
+    assert "partial" not in record
 
 
 def test_an_analysis_of_a_cut_short_walk_says_an_install_may_be_missing(home):
@@ -447,7 +455,7 @@ def test_an_analysis_of_a_cut_short_walk_says_an_install_may_be_missing(home):
     assert finding["variant"] == "cant_judge" and "may be missing" in finding["summary"]
     assert not any("package listing" in g for g in assessment["coverage"]["gaps"])
     (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
-    assert record["status"] == CANT_JUDGE
+    assert record["status"] == CANT_JUDGE and record["partial"] == "web_roots"
 
 
 def test_an_analysis_of_a_cut_short_walk_that_found_every_install_near_the_top(home):

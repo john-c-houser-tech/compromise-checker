@@ -400,8 +400,46 @@ def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
             "fix_time_exact": e.fix_time_exact,
             "judged": judged(e),
         }
+        | _application_fields(e)
         for e in exposures
     ]
+
+
+def _application_fields(e: Any) -> dict[str, Any]:
+    """Only where there is something to say, so a packages-only pack's
+    record is as before (plan A.3): `partial: web_roots` when a web root's
+    walk was cut short (a record without it that can't be judged saw only
+    part of the package listing), and each install of the pack's
+    applications, worst first."""
+    fields: dict[str, Any] = {}
+    if getattr(e, "applications_partial", False):
+        fields["partial"] = "web_roots"
+    if installs := _worst_first(e):
+        fields["applications"] = [_install_record(a) for a in installs][:MAX_INSTALLS]
+    return fields
+
+
+MAX_INSTALLS = 20
+_INSTALL_ORDER = ("vulnerable", "can't judge", "fixed", "not affected")
+
+
+def _worst_first(exposure: Any) -> list[Any]:
+    installs = list(getattr(exposure, "applications", []))
+    rank = {s: n for n, s in enumerate(_INSTALL_ORDER)}
+    return sorted(installs, key=lambda a: (rank.get(a.status, 9), a.path))
+
+
+def _install_record(install: Any) -> dict[str, Any]:
+    return {
+        "name": install.name,
+        "path": install.path,
+        "version": install.version,
+        "status": install.status,
+        "fixed": install.fixed,
+        "why": install.why[:300],
+        "versions_seen": install.folders[:20],
+        "fixed_since": install.fixed_since,
+    }
 
 
 def analyze(

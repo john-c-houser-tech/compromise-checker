@@ -13,6 +13,7 @@ from checker.web.finding_words import (  # noqa: E402
     BY_TITLE,
     BY_VARIANT,
     SECTIONS,
+    TITLE_FIRST,
     WORDS,
     words_for,
 )
@@ -47,7 +48,12 @@ def test_every_band_and_category_has_words():
     "text",
     [
         t
-        for pair in [*WORDS.values(), *BY_VARIANT.values(), *(w for _, _, w in BY_TITLE)]
+        for pair in [
+            *WORDS.values(),
+            *BY_VARIANT.values(),
+            *(w for _, _, w in BY_TITLE),
+            *(w for _, _, w in TITLE_FIRST),
+        ]
         for t in pair
     ],
 )
@@ -73,8 +79,17 @@ def test_each_title_named_is_still_one_the_checks_write():
     from pathlib import Path
 
     source = "".join(p.read_text() for p in Path(checks.__file__).parent.glob("*.py"))
-    for _, start, _ in BY_TITLE:
+    for _, start, _ in (*BY_TITLE, *TITLE_FIRST):
         assert start in source, start
+
+
+def test_an_application_finding_gets_its_own_words_before_its_variant():
+    meaning, todo = words_for(
+        "pack.exposure", "vulnerable", "An application is vulnerable to a threat a pack describes"
+    )
+    assert "web application" in meaning and "old version folders" in todo
+    package, _ = words_for("pack.exposure", "vulnerable", "A package is vulnerable to a threat")
+    assert "web application" not in package
 
 
 @pytest.mark.parametrize(

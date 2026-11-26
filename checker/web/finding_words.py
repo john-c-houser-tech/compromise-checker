@@ -428,6 +428,26 @@ BY_VARIANT = {
         "Check that you know why it happened.",
     ),
 }
+# Findings that share a variant with others but need words of their own, by title, looked
+# up before the variant: an application a pack judges by its version folder (plan A.3).
+TITLE_FIRST = (
+    (
+        "pack.exposure",
+        "An application is vulnerable to a threat a pack describes",
+        (
+            "A web application on this server is running a version with a known flaw that attackers are using now.",
+            "Upgrade the application named here to a release with the fix, and remove its old version folders once the new release is tested. If this page also shows signs of a break-in, get advice first.",
+        ),
+    ),
+    (
+        "pack.exposure",
+        "An application's version can't be judged against a threat pack",
+        (
+            "A web application on this server may have a known flaw that attackers are using, but the check can't tell which version it runs.",
+            "Ask whoever runs the application which version is in use. If the check saw only part of the web folders, run a fresh check.",
+        ),
+    ),
+)
 # Where a check's kinds of finding have no variant to tell them apart, by the finding's own
 # title. Only for titles the tool writes; a test checks each is still in the checks' source.
 BY_TITLE = (
@@ -550,6 +570,10 @@ SECTIONS = {
 
 def words_for(check: object, variant: object, title: object = None) -> tuple[str, str]:
     try:
+        if isinstance(title, str):
+            for on, start, words in TITLE_FIRST:
+                if on == check and title.startswith(start):
+                    return words
         if found := BY_VARIANT.get((check, variant)):
             return found
         if isinstance(title, str):

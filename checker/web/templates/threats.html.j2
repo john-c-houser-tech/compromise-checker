@@ -20,7 +20,7 @@
   {% for group in t.groups %}
   <div class="affected tone-{{ group.tone }}">
     <h3>{{ group.title }} <span>({{ group.hosts | length }})</span></h3>
-    <ul>{% for host in group.hosts %}<li>{% set link = host_url(host) %}{% if link %}<a href="{{ link }}">{{ host }}</a>{% else %}{{ host }}{% endif %}</li>{% endfor %}</ul>
+    <ul>{% for host in group.hosts %}<li>{% set link = host_url(host) %}{% if link %}<a href="{{ link }}">{{ host }}</a>{% else %}{{ host }}{% endif %}{% if group.installs.get(host) %}<ul class="installs">{% for line in group.installs[host] %}<li>{{ line | visible(400) }}</li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>
   </div>
   {% endfor %}
   <h3>What this threat update advises</h3>

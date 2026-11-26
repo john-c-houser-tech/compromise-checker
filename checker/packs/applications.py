@@ -35,6 +35,7 @@ from checker.packs.format import Application, dotted, specificity
 
 VULNERABLE, FIXED, CANT_JUDGE = "vulnerable", "fixed", "can't judge"
 NOT_AFFECTED = "not affected"
+_DIGITS = tuple("0123456789")
 
 
 @dataclass
@@ -90,7 +91,7 @@ def _versions(apps: list[Application], files: dict[str, dict[str, Any]]) -> dict
                 continue
             for (name, folder), prefix in kinds.items():
                 # The version starts with a digit: redcap_vendor isn't a version folder.
-                if part.startswith(prefix) and part[len(prefix) : len(prefix) + 1].isdigit():
+                if part.startswith(prefix) and part[len(prefix) : len(prefix) + 1] in _DIGITS:
                     install = "/".join(parts[:i]) or "/"
                     key = (name, folder, install)
                     found.setdefault(key, {}).setdefault(part[len(prefix) :], []).append(path)
@@ -166,8 +167,9 @@ def judge_installs(apps: list[Application], web: WebEvidence) -> tuple[list[Inst
             folders=ordered + sorted(unread),
             evidence=sorted(versions[newest])[0],
         )  # fmt: skip
-        if not _walked(web, place):
-            install.why = f"the walk of {place} was cut short before its version folders were seen"
+        if not _walked(web, place, folder):
+            root = f"the walk of {place}" if place else "the walk of its web root"
+            install.why = f"{root} was cut short before its version folders were all seen"
         elif unread:
             install.why = f"a version folder whose name isn't a version: {prefix}{unread[0][:60]}"
         else:
@@ -175,7 +177,15 @@ def judge_installs(apps: list[Application], web: WebEvidence) -> tuple[list[Inst
             install.status, install.why = status, why
             install.fixed = entry.fixed if entry else None
             if status == FIXED:
-                first = next(v for v in ordered if _decide(entries, v)[0] == FIXED)
+                # The fix arrived with the first fixed version above every
+                # vulnerable one: 16.0.49, then 17.3.9, then 17.3.10 was
+                # exposed until 17.3.10 came.
+                states = [_decide(entries, v)[0] for v in ordered]
+                bad = [n for n, st in enumerate(states) if st not in (FIXED, NOT_AFFECTED)]
+                last_bad = max(bad, default=-1)
+                first = next(
+                    v for n, v in enumerate(ordered) if n > last_bad and states[n] == FIXED
+                )
                 arrived = _arrived(versions[first], web.files, f"{path}/{prefix}{first}",
                                    web.earlier)  # fmt: skip
                 install.fixed_since = arrived.isoformat() if arrived else None
@@ -183,12 +193,18 @@ def judge_installs(apps: list[Application], web: WebEvidence) -> tuple[list[Inst
     return installs, _maybe_missing(web)
 
 
-def _walked(web: WebEvidence, place: str | None) -> bool:
-    """Whether an install's version folders were all seen."""
+def _walked(web: WebEvidence, place: str | None, folder: str) -> bool:
+    """Whether an install's version folders were all seen: its web root
+    walked whole, or this pack's version folders walked first and whole
+    (only patterns the collection was sent count: a pack added since
+    wasn't walked first)."""
     if web.walks is None:
         return web.complete
     walk = web.walks.get(place or "")
-    return bool(walk) and bool(walk.get("whole") or walk.get("first_whole"))
+    if not walk:
+        return False
+    first = walk.get("first_whole") and folder in (walk.get("first_patterns") or [])
+    return bool(walk.get("whole") or first)
 
 
 def _maybe_missing(web: WebEvidence) -> bool:

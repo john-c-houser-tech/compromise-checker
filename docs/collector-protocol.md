@@ -89,7 +89,10 @@ stores it with the evidence; the manifest carries the version string only.
   one, and everything under them, before the rest, so a walk cut short by
   its entry limit still has them; its `walk_summary` then carries `first`
   (`patterns`, `found`, and `whole`: every matching folder found was walked
-  whole). The controller sends the version folder patterns of the packs in
+  whole, with no errors and nothing left undescended inside them). The web
+  roots' walk summaries carry `phase: "web_roots"`, and the `web_roots`
+  record says `walks: "tagged"`, so the controller doesn't take a later walk
+  of the same folder (the privileged search) for theirs. The controller sends the version folder patterns of the packs in
   force (packs with `applications`); omitted or empty, the walk is as
   before. Anything else is refused.
 - `mail_key_withheld` — optional: why the controller sent no mail key to

@@ -5,6 +5,8 @@ still has every version folder it found, and says so."""
 import gzip
 import io
 import json
+import os
+from pathlib import Path
 
 from test_modules import FixtureRoot, load_collector, records_named, settings
 
@@ -71,9 +73,38 @@ class WalkFirstTests(FixtureRoot):
         self.assertTrue(summary["whole"] and summary["first"]["whole"])
         self.assertEqual(len(self.version_files(sent)), 6)
 
+    def test_every_limit_that_lets_the_version_files_through_says_whole(self):
+        self.site(uploads=12)
+        for limit in range(1, 40):
+            summary, sent = self.run_walk(first=["redcap_v*"], limit=limit)
+            if summary["first"]["whole"]:
+                # Whole: none found yet (the analysis then can't judge), or all of them.
+                self.assertIn(summary["first"]["found"], (0, 2), limit)
+                if summary["first"]["found"] == 2:
+                    self.assertEqual(len(self.version_files(sent)), 6, limit)
+            elif len(self.version_files(sent)) == 6 and summary["first"]["found"] == 2:
+                # Everything was walked: the summary must not say otherwise.
+                self.fail(f"limit {limit}: every version file sent, but not whole")
+
+    def test_an_unreadable_version_folder_isnt_whole(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads any folder")
+        self.site(uploads=0)
+        locked = Path(self.root, "var/www/html/redcap/redcap_v17.3.10")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        summary, sent = self.run_walk(first=["redcap_v*"])
+        self.assertFalse(summary["first"]["whole"])
+
+    def test_web_root_walks_say_their_phase(self):
+        self.site(uploads=0)
+        summary, _ = self.run_walk(first=["redcap_v*"])
+        self.assertEqual(summary["phase"], "web_roots")
+
     def test_bad_patterns_are_refused(self):
         collector = load_collector(self.root)
-        for bad in (["../x*"], ["redcap_v"], ["a*b*"], ["x*"] * 21, "redcap_v*"):
+        bad_ones = (["../x*"], ["redcap_v"], ["a*b*"], ["x*"] * 21, "redcap_v*", ["redcap_v*\n"])
+        for bad in bad_ones:
             value = json.loads(web_settings())
             value["web_first"] = bad
             self.assertTrue(any("web_first" in p for p in collector.settings_problems(value)), bad)

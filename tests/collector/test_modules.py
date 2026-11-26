@@ -3936,7 +3936,8 @@ class UnusualFilesTests(FixtureRoot):
         web = {r["path"] for r in records_named(records, "web_file")}
         self.assertEqual(web, {"/srv/app/public/x.phtml"})  # the host's list replaces the defaults
         self.assertEqual(
-            records_named(records, "web_roots")[0], {"roots": ["/srv/app"], "source": "host"}
+            records_named(records, "web_roots")[0],
+            {"roots": ["/srv/app"], "source": "host", "walks": "tagged"},
         )
 
     def test_privileged_files_outside_system_directories(self):

@@ -79,10 +79,15 @@ def exposure(context: Context) -> list[Finding]:
                     )
                 )
         found += _applications(item, named, pack, context)
-        explained = any(p.status == CANT_JUDGE for p in item.packages) or (
-            item.applications_partial or any(a.status == CANT_JUDGE for a in item.applications)
+        # The package listing's own gap, said whatever the applications add.
+        listing_gap = item.packages_partial or (
+            not item.applications and not item.applications_partial
         )
-        if item.status == CANT_JUDGE and not explained:
+        if (
+            item.status == CANT_JUDGE
+            and listing_gap
+            and not any(p.status == CANT_JUDGE for p in item.packages)
+        ):
             context.gaps.append(
                 f"pack {named}: the package listing wasn't collected whole, so a vulnerable"
                 " package may be missing from it; counted as exposed"

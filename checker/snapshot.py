@@ -1358,21 +1358,44 @@ class SnapshotBuilder:
         if name == "system_files_summary" and data.get("truncated"):
             self._module_gap("system_files", f"cut short: {data.get('truncated_reason')}")
 
+    def _web_walk(self, name: str, data: dict[str, Any]) -> None:
+        # What the web roots' walks covered, for applications a pack judges by
+        # their version folders (checker.packs.applications; plan A.2). Only a
+        # collector that tags its web roots' walks (walks: "tagged") is read
+        # this way: its later walks of the same folders (the privileged
+        # search) aren't the web roots' own.
+        if name == "web_roots" and isinstance(data.get("roots"), list):
+            self.live["web_roots"] = [str(r) for r in data["roots"]][:64]
+            if data.get("walks") == "tagged":
+                self.live["web_walks"] = {}
+        walks = self.live.get("web_walks")
+        if walks is None:
+            return
+        place = str(data.get("place") or data.get("path") or "")
+        if name == "walk_summary" and data.get("phase") == "web_roots" and place:
+            first = data.get("first")
+            walks[place] = {
+                "whole": data.get("whole") is True,
+                "first_whole": first.get("whole") is True if isinstance(first, dict) else None,
+                "first_patterns": (
+                    [str(p) for p in first.get("patterns") or []][:20]
+                    if isinstance(first, dict) else []
+                ),
+            }  # fmt: skip
+        elif name == "phase_time_limit" and data.get("phase") == "web_roots":
+            self.live["web_time_limit"] = True
+        elif (
+            name in ("not_examined", "unreadable_file", "site_php_partial")
+            and place in self.live.get("web_roots", [])
+            and place not in walks
+        ):
+            # A web root refused, unreadable or never reached: not walked.
+            walks[place] = {"whole": False, "first_whole": False, "first_patterns": []}
+
     def _on_unusual_files(self, name: str, data: dict[str, Any]) -> None:
         if name == "site_php":
             self._site_php_read = True
-        # What the web roots' walks covered, for applications a pack judges by
-        # their version folders (checker.packs.applications; plan A.2).
-        if name == "web_roots" and isinstance(data.get("roots"), list):
-            self.live["web_roots"] = [str(r) for r in data["roots"]][:64]
-        elif name == "walk_summary" and data.get("place"):
-            first = data.get("first")
-            self.live.setdefault("walks", {})[str(data["place"])] = {
-                "whole": data.get("whole") is True,
-                "first_whole": first.get("whole") is True if isinstance(first, dict) else None,
-            }
-        elif name == "phase_time_limit" and data.get("phase") == "web_roots":
-            self.live["web_time_limit"] = True
+        self._web_walk(name, data)
         sections = {
             "unusual_file": "unusual_files",
             "web_file": "web_files",

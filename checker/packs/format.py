@@ -289,13 +289,18 @@ _APP_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
 # A version folder's name: a fixed prefix, then the version (plan A.2,
 # decision 3): "redcap_v*" finds redcap_v17.3.10.
 _FOLDER = re.compile(r"[A-Za-z0-9._-]{1,62}\*")
-_DOTTED = re.compile(r"\d{1,6}(?:\.\d{1,6}){0,5}")
+# ASCII digits, no leading zeros: a folder named redcap_v017.3.10 isn't a version.
+_DOTTED = re.compile(r"(?:0|[1-9][0-9]{0,5})(?:\.(?:0|[1-9][0-9]{0,5})){0,5}")
 _DOTTED_GLOB = re.compile(r"[0-9.*?]{1,40}")
 
 
 def dotted(value: str) -> tuple[int, ...] | None:
-    """A dotted version as numbers (17.3.10 above 17.3.9), or None."""
-    return tuple(int(p) for p in value.split(".")) if _DOTTED.fullmatch(value) else None
+    """A dotted version as numbers (17.3.10 above 17.3.9), padded with zeros
+    so 13.3 and 13.3.0 compare equal, or None."""
+    if not _DOTTED.fullmatch(value):
+        return None
+    parts = [int(p) for p in value.split(".")]
+    return tuple(parts + [0] * (6 - len(parts)))
 
 
 def specificity(glob: str) -> int:
@@ -458,6 +463,19 @@ class Exposure(_Strict):
         if not self.packages and not self.applications:
             raise ValueError("an exposure needs packages, applications or both")
         apps = self.applications
+        named: dict[str, str] = {}
+        for app in apps:
+            if named.setdefault(app.folder, app.name) != app.name:
+                raise ValueError(
+                    f"the folder {app.folder!r} is under two names ({named[app.folder]!r} and"
+                    f" {app.name!r}): give every entry for one application the same name"
+                )
+        for one in named:
+            for other in named:
+                if one != other and one[:-1].startswith(other[:-1]):
+                    raise ValueError(
+                        f"the folders {other!r} and {one!r} overlap: one prefix starts the other"
+                    )
         for n, one in enumerate(apps):
             for other in apps[n + 1 :]:
                 if (one.name, one.folder) != (other.name, other.folder):

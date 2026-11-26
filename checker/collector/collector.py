@@ -1193,7 +1193,12 @@ class Walk:
         self.entries += 1
         if "error" in entry:
             self.errors += 1
+        if self._in_first and ("error" in entry or "not_examined" in entry):
+            self._first_undescended += 1  # part of a version folder not seen
         return entry
+
+    def _first_name(self, name):
+        return any(fnmatch.fnmatchcase(name, p) for p in self.first)
 
     def __iter__(self):
         try:
@@ -1244,6 +1249,8 @@ class Walk:
                         absolute = _join(directory, item.name)
                         risk = mount_risk(absolute)
                         if risk:  # e.g. an NFS mount inside the directory
+                            if self.first and self._first_name(item.name):
+                                self._first_undescended += 1
                             yield self._counted({"path": absolute, "not_examined": risk})
                             continue
                         try:
@@ -1252,12 +1259,14 @@ class Walk:
                             if stat.S_ISLNK(info.st_mode):
                                 link_target = os.readlink(item.name, dir_fd=fd)
                         except OSError as exc:
+                            if self.first and self._first_name(item.name):
+                                self._first_undescended += 1
                             yield self._counted({"path": absolute, "error": str(exc)})
                             continue
                         entry = self._entry(absolute, info, link_target)
                         if stat.S_ISDIR(info.st_mode):
-                            matched = self._in_first or any(
-                                fnmatch.fnmatchcase(item.name, p) for p in self.first
+                            matched = self._in_first or (
+                                bool(self.first) and self._first_name(item.name)
                             )
                             if matched and not self._in_first:
                                 self._first_found += 1
@@ -1280,6 +1289,7 @@ class Walk:
                 yield self._counted({"path": directory, "error": str(exc)})
             finally:
                 os.close(fd)
+            self._in_first = False  # this folder's listing is done
 
 
 # --- Running allow-listed commands -------------------------------------------------
@@ -2584,7 +2594,7 @@ def sudo_logs_input(line):
 # account names; never one sudo could take for an option.
 _SUDO_ACCOUNT = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$")
 # A pack's version folder pattern, walked first in web roots (plan A.2).
-WEB_FIRST = re.compile(r"^[A-Za-z0-9._-]{1,62}\*$")
+WEB_FIRST = re.compile(r"[A-Za-z0-9._-]{1,62}\*")
 _SUDO_LIST_OPTION = re.compile(r"[\s,:]")
 # sudo settings that make a look-up leave more traces (mail the
 # administrators, send the event to a log server): no look-up then.
@@ -5825,7 +5835,7 @@ def mask_names(entry):
 
 def walk_place(
     run, module, top, limit, keep, hash_it, record="unusual_file", prune=None, missed=None,
-    first=(),
+    first=(), phase=None,
 ):  # fmt: skip
     """Walk one place; send each entry `keep(entry)` accepts as `record`,
     annotated (hashed where `hash_it(entry, kind)` says), and count the
@@ -5871,6 +5881,8 @@ def walk_place(
     # Whole only if nothing was cut short or left undescended: a place
     # listed only in part is still searched for privileged files.
     summary["whole"] = not summary["truncated"] and not any(summary["not_descended"].values())
+    if phase is not None:
+        summary["phase"] = phase
     run.stream.record(module, "walk_summary", summary)
     return summary
 
@@ -6078,7 +6090,11 @@ def module_unusual_files(run):
     configured = run.settings.get("web_roots")
     roots = list(DEFAULT_WEB_ROOTS) if configured is None else list(configured)
     run.stream.record(
-        module, "web_roots", {"roots": roots, "source": "default" if configured is None else "host"}
+        module,
+        "web_roots",
+        # walks: the web roots' walk summaries say phase "web_roots" (plan A.2),
+        # so a later walk of the same folder (the privileged search) isn't read as theirs.
+        {"roots": roots, "source": "default" if configured is None else "host", "walks": "tagged"},
     )
     with time_share(run, module, "web_roots", WEB_TIME_SHARE):
         done = 0
@@ -6096,7 +6112,7 @@ def module_unusual_files(run):
                     return _is_web_listed(entry, root)
 
                 summary = walk_place(run, module, top, MAX_WEB_ENTRIES, web_listed, _web_hashed,
-                                     "web_file", missed=missed,
+                                     "web_file", missed=missed, phase="web_roots",
                                      first=run.settings.get("web_first") or ())  # fmt: skip
                 note(summary)
                 done += 1
@@ -9453,7 +9469,7 @@ def settings_problems(settings):
     if not (
         isinstance(web_first, list)
         and len(web_first) <= 20
-        and all(isinstance(p, str) and WEB_FIRST.match(p) for p in web_first)
+        and all(isinstance(p, str) and WEB_FIRST.fullmatch(p) for p in web_first)
     ):
         problems.append("web_first must be a list of at most 20 folder patterns (prefix*)")
     withheld = settings.get("mail_key_withheld")

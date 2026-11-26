@@ -83,6 +83,8 @@ class Exposure:
     applications: list[Any] = field(default_factory=list)
     # True when an install may be missing (a web root's walk was cut short)
     applications_partial: bool = False
+    # True when the package listing was collected only in part
+    packages_partial: bool = False
     # What dated the fix: "packages" (an install or update) or "applications"
     # (a version folder's files, plan A.2)
     fix_source: str = "packages"
@@ -167,11 +169,12 @@ def judge(
     found = _judge_packages(
         pack, host, packages, processes, now, complete, history, earlier, history_complete
     )
-    if not pack.exposure.packages:
-        found.status = NOT_AFFECTED
-    elif found.status in (NOT_COVERED, UNKNOWN_RELEASE):
+    uncovered = found.status if found.status in (NOT_COVERED, UNKNOWN_RELEASE) else None
+    if not pack.exposure.packages or uncovered:
         found.status = NOT_AFFECTED  # the applications don't depend on the release
     _judge_applications(found, pack, web or WebEvidence({}, False), now)
+    if uncovered and pack.exposure.packages and found.status == NOT_AFFECTED:
+        found.status = uncovered  # nothing found: the release gap still stands
     return found
 
 
@@ -252,6 +255,7 @@ def _judge_packages(
     elif CANT_JUDGE in statuses or not complete:
         # A listing collected only in part could hide a vulnerable package.
         found.status = CANT_JUDGE
+        found.packages_partial = not complete
     elif FIXED in statuses:
         found.status = FIXED
     else:

@@ -282,7 +282,7 @@ def _web_evidence(context: Context) -> Any:
     return WebEvidence(
         files=section.items if section is not None else {},
         complete=section is not None and section.complete,
-        walks=live.get("walks") if "web_roots" in live else None,
+        walks=live.get("web_walks"),
         roots=live.get("web_roots"),
         time_limit=bool(live.get("web_time_limit")),
         earlier=earlier,
@@ -384,7 +384,8 @@ def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
     def judged(e) -> bool:
         if e.status != CANT_JUDGE or e.removed_at:
             return True
-        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in e.packages)
+        found = list(e.packages) + list(getattr(e, "applications", []))
+        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in found)
 
     return [
         {

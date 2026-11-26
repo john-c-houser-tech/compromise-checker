@@ -10,7 +10,14 @@ from test_pack_format import GOOD
 from test_snapshot import add_bundle, host_records, rec
 
 from checker.packs.applications import WebEvidence, patterns
-from checker.packs.exposure import CANT_JUDGE, FIXED, NOT_AFFECTED, VULNERABLE, judge
+from checker.packs.exposure import (
+    CANT_JUDGE,
+    FIXED,
+    NOT_AFFECTED,
+    NOT_COVERED,
+    VULNERABLE,
+    judge,
+)
 from checker.packs.format import PackError, globs_overlap, read
 
 REDCAP = textwrap.dedent(
@@ -71,12 +78,15 @@ def tree(*versions, site=SITE, ctime="2026-09-01T00:00:00+00:00", place=ROOT, fi
     return items
 
 
-def web(files, whole=True, first_whole=None, complete=True, earlier=(), walks=True):
+def web(files, whole=True, first_whole=None, complete=True, earlier=(), walks=True,
+        patterns=("redcap_v*",), extra=None):  # fmt: skip
+    found = {ROOT: {"whole": whole, "first_whole": first_whole, "first_patterns": list(patterns)}}
+    found |= extra or {}
     return WebEvidence(
         files=files,
         complete=complete,
-        walks={ROOT: {"whole": whole, "first_whole": first_whole}} if walks else None,
-        roots=[ROOT],
+        walks=found if walks else None,
+        roots=[ROOT, *(extra or {})],
         earlier=list(earlier),
     )
 
@@ -114,6 +124,16 @@ def test_an_applications_only_pack_reads():
         ('fixed: "16.0.49"', 'fixed: "16.0.49-lts"', "not a dotted version"),
         ('affected_from: "13.3.0"', 'affected_from: "18.0.0"', "is below affected_from"),
         ('versions: "16.0.*"', 'versions: "17.?.1"', "equally specific"),
+        (
+            'name: REDCap\n      folder: "redcap_v*"\n      versions: "16.0.*"',
+            'name: Redcap\n      folder: "redcap_v*"\n      versions: "16.0.*"',
+            "under two names",
+        ),
+        (
+            'folder: "redcap_v*"\n      versions: "16.0.*"',
+            'folder: "redcap_*"\n      versions: "16.0.*"',
+            "one prefix starts the other",
+        ),
     ],
 )
 def test_a_bad_application_entry_is_refused(old, new, said):
@@ -182,6 +202,16 @@ def test_a_folder_with_the_prefix_but_no_version_isnt_a_version_folder():
     assert install.status == FIXED and install.folders == ["17.3.10"]
 
 
+def test_a_folder_with_a_leading_zero_isnt_read_as_a_version():
+    (install,) = judged(tree("17.3.10", "017.3.11")).applications
+    assert install.status == CANT_JUDGE and "isn't a version" in install.why
+
+
+def test_a_two_part_version_compares_as_its_three_part_form():
+    (install,) = judged(tree("13.3")).applications
+    assert install.status == VULNERABLE  # 13.3 is 13.3.0, affected
+
+
 def test_versions_sort_as_numbers():
     (install,) = judged(tree("17.3.9", "17.3.10", "17.3.2")).applications
     assert install.version == "17.3.10"
@@ -214,6 +244,16 @@ def test_the_first_fixed_folder_dates_the_fix_not_the_newest():
              ("17.3.12", "2026-10-15T00:00:00+00:00"))
     )  # fmt: skip
     assert found.applications[0].fixed_since == "2026-10-05T00:00:00+00:00"
+
+
+def test_the_fix_dates_from_the_last_move_to_a_fixed_version():
+    # 16.0.49 (fixed), then 17.3.9 (vulnerable, in the window), then 17.3.10.
+    found = judged(
+        tree(("16.0.49", "2026-09-10T00:00:00+00:00"), ("17.3.9", "2026-10-01T00:00:00+00:00"),
+             ("17.3.10", "2026-10-15T00:00:00+00:00"))
+    )  # fmt: skip
+    assert found.applications[0].fixed_since == "2026-10-15T00:00:00+00:00"
+    assert found.status == FIXED and found.share == pytest.approx(25 / 30)
 
 
 def test_an_earlier_collection_that_listed_the_fix_dates_it_sooner():
@@ -263,6 +303,25 @@ def test_a_cut_short_walk_before_the_version_folders_cant_judge_the_install():
     assert install.status == CANT_JUDGE and "cut short" in install.why
 
 
+def test_version_folders_walked_first_count_only_for_the_patterns_sent():
+    # A pack added after the collection: its folders weren't walked first.
+    found = judged(tree("17.3.10"), whole=False, first_whole=True, patterns=["other_v*"])
+    assert found.applications[0].status == CANT_JUDGE
+
+
+def test_a_web_root_that_wasnt_walked_may_hide_an_install():
+    unwalked = {"/srv/www": {"whole": False, "first_whole": False, "first_patterns": []}}
+    found = judge(PACK, HOST, {}, [], NOW, True, web=web(tree("17.3.10"), extra=unwalked))
+    assert found.applications[0].status == FIXED
+    assert found.applications_partial and found.status == CANT_JUDGE
+
+
+def test_an_install_without_a_web_root_says_so():
+    files = {k: {**v, "place": None} for k, v in tree("17.3.10").items()}
+    (install,) = judged(files).applications
+    assert install.status == CANT_JUDGE and "its web root" in install.why
+
+
 def test_a_collection_from_an_older_collector_uses_the_section():
     assert judged(tree("17.3.10"), walks=False, complete=True).status == FIXED
     found = judged(tree("17.3.10"), walks=False, complete=False)
@@ -291,6 +350,9 @@ def test_a_pack_with_packages_and_applications_takes_the_worse():
     found = judge(pack, rocky, {}, [], datetime(2026, 10, 30, tzinfo=UTC), True,
                   web=web(tree("17.4.3")))  # fmt: skip
     assert found.status == VULNERABLE  # the install, on a release with no package of the pack's
+    debian = {"os": {"id": "ubuntu", "version_id": "22.04"}}
+    found = judge(pack, debian, {}, [], datetime(2026, 10, 30, tzinfo=UTC), True, web=web({}))
+    assert found.status == NOT_COVERED  # no install found: the release gap still stands
 
 
 # --- Through an analysis ---------------------------------------------------------------------
@@ -321,9 +383,14 @@ def redcap_records(version, whole=True):
         errors=0, not_descended={"depth": 0, "other_filesystem": 0, "pruned": 0},
         truncated=not whole, truncated_reason=None if whole else "entries", sent=len(web_files),
         not_listed=0, whole=whole, first={"patterns": ["redcap_v*"], "found": 1, "whole": True},
+        phase="web_roots",
     )  # fmt: skip
-    roots = rec("unusual_files", "web_roots", roots=[ROOT], source="default")
-    return host_records(extra=(roots, *web_files, summary))
+    # The privileged search's later walk of the same folder isn't the web roots' own.
+    later = rec("unusual_files", "walk_summary", top=ROOT, place=ROOT, resolved=ROOT, entries=1,
+                errors=0, not_descended={}, truncated=False, truncated_reason=None, sent=0,
+                not_listed=0, whole=True)  # fmt: skip
+    roots = rec("unusual_files", "web_roots", roots=[ROOT], source="default", walks="tagged")
+    return host_records(extra=(roots, *web_files, summary, later))
 
 
 def test_an_analysis_reports_a_vulnerable_install(home):
@@ -348,3 +415,20 @@ def test_an_analysis_of_a_cut_short_walk_says_an_install_may_be_missing(home):
     (finding,) = [f for f in assessment["findings"] if f["check"] == "pack.exposure"]
     assert finding["variant"] == "cant_judge" and "may be missing" in finding["summary"]
     assert not any("package listing" in g for g in assessment["coverage"]["gaps"])
+    (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
+    assert record["status"] == CANT_JUDGE
+
+
+def test_the_snapshot_keeps_only_the_web_roots_own_walks():
+    from checker.snapshot import SnapshotBuilder
+
+    snap = SnapshotBuilder()
+    for r in redcap_records("17.4.4", whole=False):
+        if r.get("type") == "record" and r["module"] == "unusual_files":
+            snap._web_walk(r["name"], r["data"])
+    snap._web_walk("not_examined", {"path": "/srv/www", "reason": "nfs"})  # not a web root here
+    walks = snap.live["web_walks"]
+    assert walks == {ROOT: {"whole": False, "first_whole": True, "first_patterns": ["redcap_v*"]}}
+    snap.live["web_roots"].append("/srv/www")
+    snap._web_walk("not_examined", {"path": "/srv/www", "reason": "nfs"})
+    assert walks["/srv/www"] == {"whole": False, "first_whole": False, "first_patterns": []}

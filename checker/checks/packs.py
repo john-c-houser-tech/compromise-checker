@@ -172,8 +172,8 @@ def _applications(item, named: str, pack: str, context: Context) -> list[Finding
         roots = ", ".join(item.applications_shallow)
         context.gaps.append(
             f"pack {named}: the walk of {roots} was cut short; every folder down to"
-            f" {INSTALL_DEPTH} levels below it was listed, so an install there was found, but"
-            " one deeper than that wouldn't be"
+            f" {INSTALL_DEPTH} levels below it was listed, so any install there would have been"
+            " found, but one deeper than that wouldn't be"
         )
     for install in item.applications:
         entities = [f"application:{install.name}", pack]

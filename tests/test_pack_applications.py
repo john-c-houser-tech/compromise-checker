@@ -302,6 +302,26 @@ def test_a_cut_short_walk_that_listed_every_folder_near_the_top_trusts_the_insta
     assert shallower.applications_partial and shallower.status == CANT_JUDGE
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"first_whole": False, "levels": 3},  # the version folders weren't all walked
+        {"first_whole": True, "levels": 3, "patterns": ["other_v*"]},  # not this pack's pattern
+        {"first_whole": True, "levels": None},  # an older collector
+    ],
+)
+def test_levels_alone_never_trust_the_installs(kwargs):
+    found = judged(tree("17.3.10"), whole=False, **kwargs)
+    assert found.applications_partial and found.status == CANT_JUDGE
+
+
+def test_running_out_of_time_never_trusts_the_installs():
+    evidence = web(tree("17.3.10"), whole=False, first_whole=True, levels=3)
+    evidence.time_limit = True
+    found = judge(PACK, HOST, {}, [], NOW, True, web=evidence)
+    assert found.applications_partial and found.status == CANT_JUDGE
+
+
 def test_a_cut_short_walk_still_says_a_vulnerable_install_is_vulnerable():
     found = judged(tree("17.3.9"), whole=False, first_whole=True)
     assert found.status == VULNERABLE
@@ -394,7 +414,7 @@ def redcap_records(version, whole=True, levels=None):
         truncated=not whole, truncated_reason=None if whole else "entries", sent=len(web_files),
         not_listed=0, whole=whole,
         first={"patterns": ["redcap_v*"], "found": 1, "whole": True, "levels_whole": levels},
-        phase="web_roots",
+        phase="web_roots", seen_whole=whole,
     )  # fmt: skip
     # The privileged search's later walk of the same folder isn't the web roots' own.
     later = rec("unusual_files", "walk_summary", top=ROOT, place=ROOT, resolved=ROOT, entries=1,
@@ -450,6 +470,11 @@ def test_the_snapshot_keeps_only_the_web_roots_own_walks():
         if r.get("type") == "record" and r["module"] == "unusual_files":
             snap._web_walk(r["name"], r["data"])
     snap._web_walk("not_examined", {"path": "/srv/www", "reason": "nfs"})  # not a web root here
+    # A walk that came out whole but hit an error on the way isn't whole for this.
+    errored = {"top": "/x", "place": "/x", "whole": True, "seen_whole": False, "errors": 1,
+               "phase": "web_roots"}  # fmt: skip
+    snap._web_walk("walk_summary", errored)
+    assert snap.live["web_walks"].pop("/x")["whole"] is False
     walks = snap.live["web_walks"]
     assert walks == {ROOT: {"whole": False, "first_whole": True, "first_patterns": ["redcap_v*"],
                             "levels_whole": None}}  # fmt: skip

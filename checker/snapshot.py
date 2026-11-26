@@ -1375,7 +1375,8 @@ class SnapshotBuilder:
         if name == "walk_summary" and data.get("phase") == "web_roots" and place:
             first = data.get("first")
             walks[place] = {
-                "whole": data.get("whole") is True,
+                # Whole with nothing failed or refused on the way (seen_whole).
+                "whole": data.get("whole") is True and data.get("seen_whole") is True,
                 "first_whole": first.get("whole") is True if isinstance(first, dict) else None,
                 "first_patterns": (
                     [str(p) for p in first.get("patterns") or []][:20]

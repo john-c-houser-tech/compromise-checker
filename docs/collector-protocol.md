@@ -91,14 +91,15 @@ stores it with the evidence; the manifest carries the version string only.
   (`patterns`, `found`, and `whole`: every matching folder found was walked
   whole, with no errors and nothing left undescended inside them; and
   `levels_whole`: the depth down to which every folder was listed, the top
-  being 0). With patterns, the rest of the web root is walked level by
-  level after the matching folders, so every folder near the top is listed
-  before the walk goes deep into any one. The web
-  roots' walk summaries carry `phase: "web_roots"`, and the `web_roots`
-  record says `walks: "tagged"`, so the controller doesn't take a later walk
-  of the same folder (the privileged search) for theirs. The controller sends the version folder patterns of the packs in
-  force (packs with `applications`); omitted or empty, the walk is as
-  before. Anything else is refused.
+  being 0). With patterns, the rest of the web root is walked level by level
+  after the matching folders, so every folder near the top is listed before
+  the walk goes deep into any one. The web roots' walk summaries carry
+  `phase: "web_roots"` and `seen_whole` (whole, with no error and nothing
+  refused on the way), and the `web_roots` record says `walks: "tagged"`, so
+  the controller doesn't take a later walk of the same folder (the
+  privileged search) for theirs. The controller sends the version folder
+  patterns of the packs in force (packs with `applications`); omitted or
+  empty, the walk is as before. Anything else is refused.
 - `mail_key_withheld` — optional: why the controller sent no mail key to
   this host (at most 300 characters); the collector records it with
   `mail_logs_withheld`.

@@ -1117,6 +1117,7 @@ class Walk:
         self.prune = prune  # prune(path) -> a reason not to descend, or None
         self.entries = 0
         self.errors = 0
+        self.unexamined = 0  # entries not examined (a mount the walk won't enter)
         self.not_descended = {"depth": 0, "other_filesystem": 0, "pruned": 0}
         self.truncated_reason = None
 
@@ -1218,6 +1219,8 @@ class Walk:
         self.entries += 1
         if "error" in entry:
             self.errors += 1
+        if "not_examined" in entry:
+            self.unexamined += 1
         if self._in_first and ("error" in entry or "not_examined" in entry):
             self._first_undescended += 1  # part of a version folder not seen
         return entry
@@ -1298,7 +1301,8 @@ class Walk:
                         except OSError as exc:
                             if self.first and self._first_name(item.name):
                                 self._first_undescended += 1
-                            self._unlisted(depth + 1)
+                            if not isinstance(exc, FileNotFoundError):
+                                self._unlisted(depth + 1)  # a file gone mid-walk hides nothing
                             yield self._counted({"path": absolute, "error": str(exc)})
                             continue
                         entry = self._entry(absolute, info, link_target)
@@ -5925,6 +5929,9 @@ def walk_place(
     summary["whole"] = not summary["truncated"] and not any(summary["not_descended"].values())
     if phase is not None:
         summary["phase"] = phase
+        # Whole, and nothing in it failed or was refused on the way (plan A.2):
+        # what applications are judged by.
+        summary["seen_whole"] = summary["whole"] and not summary["errors"] and not walk.unexamined
     run.stream.record(module, "walk_summary", summary)
     return summary
 

@@ -110,7 +110,7 @@ class WalkFirstTests(FixtureRoot):
         self.assertEqual(sum("/redcap-uat/redcap_v" in p for p in sent), 2)
         self.assertEqual(len(self.version_files(sent)), 8)
         self.assertTrue(summary["first"]["whole"])
-        self.assertGreaterEqual(summary["first"]["levels_whole"], 3)  # every install near the top
+        self.assertEqual(summary["first"]["levels_whole"], 3)  # every install near the top
 
     def test_levels_whole_counts_an_unreadable_folder_near_the_top(self):
         if os.geteuid() == 0:
@@ -122,6 +122,8 @@ class WalkFirstTests(FixtureRoot):
         self.addCleanup(locked.chmod, 0o755)
         summary, _ = self.run_walk(first=["redcap_v*"])
         self.assertEqual(summary["first"]["levels_whole"], 1)  # html/other (level 2) unlisted
+        self.assertTrue(summary["whole"])  # the walk's own meaning, unchanged
+        self.assertFalse(summary["seen_whole"])  # but an error on the way: not for applications
 
     def test_web_root_walks_say_their_phase(self):
         self.site(uploads=0)

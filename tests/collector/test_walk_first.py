@@ -52,9 +52,9 @@ class WalkFirstTests(FixtureRoot):
         self.assertEqual(len(self.version_files(sent)), 6)
 
     def test_a_cut_short_walk_still_has_every_version_folder(self):
+        # A plain walk's order is the filesystem's listing order, so whether it
+        # reaches the version folders before the uploads is chance: this one doesn't.
         self.site()
-        _, plain = self.run_walk(limit=30)
-        self.assertEqual(self.version_files(plain), [])  # the uploads used up the walk
         summary, sent = self.run_walk(first=["redcap_v*"], limit=30)
         self.assertFalse(summary["whole"])
         self.assertEqual(summary["truncated_reason"], "entries")
@@ -103,8 +103,6 @@ class WalkFirstTests(FixtureRoot):
         self.site()
         for n in range(2):
             self.write(f"var/www/html/redcap-uat/redcap_v17.3.9/Classes/F{n}.php", b"<?php")
-        _, plain = self.run_walk(limit=80)
-        self.assertFalse(any("/redcap-uat/" in p for p in plain))  # missed by a plain walk
         summary, sent = self.run_walk(first=["redcap_v*"], limit=30)
         self.assertFalse(summary["whole"])
         self.assertEqual(sum("/redcap-uat/redcap_v" in p for p in sent), 2)

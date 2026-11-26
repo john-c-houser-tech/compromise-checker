@@ -121,7 +121,8 @@ judge", never "fixed".
 ## Open decisions
 
 1. **The format change.** An optional `applications` list beside `packages`, keeping `format: 1`,
-   as `native` did. **Recommended: yes.** It needs a checker release before the pack can go out.
+   as `native` did. **DECIDED 2026-11-26 (John): yes.** It needs a checker release before the pack
+   can go out.
 2. **The running version.** The newest version folder in each install. **Recommended: yes,** with
    the coverage note about unfinished upgrades. A later refinement could read the version from
    collected access logs, where REDCap's URLs carry `redcap_vX.Y.Z`.

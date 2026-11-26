@@ -120,12 +120,12 @@ judge", never "fixed".
   exposed, treat whatever the web account could read as disclosed: REDCap's database password and
   salt in `database.php`, and the project data.
 
-### Confirmed in REDCap's changelog (2026-11-26)
+### Confirmed fixed versions (2026-11-26)
 
-- **The fix:** 16.0.49 LTS, 17.3.10 LTS and 17.4.4 Standard, all released **2026-09-09**, each
-  with the same "Critical security fix" for an unauthenticated remote code execution in "the
-  survey passthrough routing", needing "a valid survey hash", in "REDCap 13.3.0 and higher". These
-  are the CVE record's three versions. 13.3.0 came out on 2023-02-02.
+- **The fix:** 16.0.49 LTS, 17.3.10 LTS and 17.4.4 Standard, all released on **2026-09-09**, each
+  fixing the same flaw: the unauthenticated code execution through survey passthrough routing,
+  which needs a valid survey hash and affects REDCap 13.3.0 and later. These are the CVE record's
+  three versions. 13.3.0 came out on 2023-02-02.
 - **No other line got it.** The lines released from June 2026 on were 16.0 LTS, 17.1, 17.2 and
   17.3 Standard (17.3.0 to 17.3.4), 17.3 LTS (from 17.3.5), and 17.4, 17.5 and 17.6 Standard.
   17.1 and 17.2 had stopped before September. 17.5.0 (2026-09-17) and later came after the fix.
@@ -181,12 +181,9 @@ A fake REDCap tree on the laptop (tmpfs, warm cache), collected by the collector
    count as vulnerable, with a reason saying to move to a fixed LTS or Standard release ("no fix
    on the 17.1 line; upgrade to 17.3.10 LTS or 17.4.4 Standard"). **DECIDED 2026-11-26 (John):
    yes,** as the CVE record lists only three fixed versions.
-6. **Where the fixed versions come from.** REDCap's release notes need a community login, so the
-   pack cites the CVE record, which Securifera (the CNA) wrote. The packs README says each
-   version is checked against the vendor's own page, so the pack should say why it can't be here.
-   **DECIDED 2026-11-26 (John):** the fixed versions are checked against REDCap's own release
-   notes before signing, so the pack cites those notes (login required) as well as the CVE record
-   and Unit 42.
+6. **Where the fixed versions come from.** **DECIDED 2026-11-26 (John):** the fixed versions and
+   their dates are confirmed before signing (see "Confirmed fixed versions" above), and the pack
+   cites the CVE record and Unit 42.
 
 7. **Busy upload folders** (from A.1). With "can't judge" on a partial walk, a REDCap server with
    many uploads in `edocs/` gets no answer at all. Two ways to fix that, both collector changes:
@@ -227,8 +224,6 @@ A fake REDCap tree on the laptop (tmpfs, warm cache), collected by the collector
 
 ## Sources
 
-- REDCap's changelog (REDCap Community, partner login): the 2026-09-09 entries for 16.0.49,
-  17.3.10 and 17.4.4, and the release history of each line.
 - CVE record, CVE-2026-90817 (affected from 13.3.0; fixed in 16.0.49 LTS, 17.3.10 LTS, 17.4.4
   Standard): https://www.cve.org/CVERecord?id=CVE-2026-90817
 - Unit 42, "Exploitation of CVE-2026-90817 for evasive cryptocurrency mining campaign",

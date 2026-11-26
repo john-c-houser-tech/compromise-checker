@@ -1,7 +1,7 @@
 # Judging exposure by an application's version, for REDCap (2026-11-26)
 
-Draft 1. The open decisions are near the end of this plan; nothing is built until John has
-settled them.
+Draft 1. Decisions 1–6 settled 2026-11-26; decision 7 (from A.1) is open. Nothing is built until
+John has settled it.
 
 ## The problem
 
@@ -136,6 +136,31 @@ judge", never "fixed".
   in the fixed versions had broken. The remediation should say to go to the newest release on the
   line, not just the first fixed one.
 
+### A.1 results (2026-11-26)
+
+A fake REDCap tree on the laptop (tmpfs, warm cache), collected by the collector's own
+`unusual_files` module with the real limits (120 s per module), under `/var/www/html/redcap`:
+
+| Tree | Entries walked | Sent (`web_file`) | Walk | Time |
+|---|---|---|---|---|
+| 8 version folders × (10,000 PHP files, ~1 GB in all, + 10,000 other files) | 162,437 | 80,004 | whole | 12 s |
+| the same, plus 60,000 uploads in `edocs/` | 200,000 (the limit) | 70,004 | **cut short** (`entries`) | 13 s |
+
+- **The data is there.** Every PHP file in every version folder came through with its path,
+  times and SHA-256, so the version folders and their arrival can be read without a collector
+  change.
+- **Time isn't the limit,** at least on a fast disk. A real server's cold disk will be slower;
+  A.6 times it on a Linode.
+- **The entry limit is.** `MAX_WEB_ENTRIES` is 200,000 per web root, and every file counts,
+  including uploads that aren't sent. REDCap's upload folder, `edocs/`, is inside the REDCap
+  folder unless the admin moves it, and the walk goes in name order, so it reaches `edocs/`
+  before the `redcap_v` folders. In the second run the **newest version folder was missed
+  entirely**, and the newest one seen was an older version.
+- **What A.2 must do about it:** an install in a web root whose walk wasn't whole reads "can't
+  judge", with a reason naming the limit. It never decides from a partial list: a missing newest
+  folder could make a fixed install read vulnerable, or, after a move between release lines,
+  the reverse. See decision 7.
+
 ## Open decisions
 
 1. **The format change.** An optional `applications` list beside `packages`, keeping `format: 1`,
@@ -162,6 +187,15 @@ judge", never "fixed".
    **DECIDED 2026-11-26 (John):** the fixed versions are checked against REDCap's own release
    notes before signing, so the pack cites those notes (login required) as well as the CVE record
    and Unit 42.
+
+7. **Busy upload folders** (from A.1). With "can't judge" on a partial walk, a REDCap server with
+   many uploads in `edocs/` gets no answer at all. Two ways to fix that, both collector changes:
+   (a) walk folders whose names look like version folders before the rest of a web root, so a
+   cut-short walk still has them; or (b) stop counting a folder's files toward the limit once it
+   has held, say, 1,000 files with no script among them, still counting them in `not_listed`.
+   **Recommended: (a),** in A.2. It's small, it changes no limits, and it keeps the rule that a
+   partial walk is reported as partial. The coverage note would also suggest moving `edocs/` out
+   of the web root, which keeps uploads out of reach of the web server anyway.
 
 ## Steps (one pull request each, after the decisions)
 

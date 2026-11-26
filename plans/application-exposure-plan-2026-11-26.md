@@ -67,9 +67,11 @@ exposure:
 - `packages` may then be empty, as long as `applications` isn't.
 - **Versions compare as dotted numbers** (`17.3.10` above `17.3.9`), with no epoch or revision.
 - **An entry's `versions` glob** picks the release line, like a package entry's. A version that
-  several entries match is judged by the most specific glob, so `17.3.*` decides 17.3.x before
-  `*` does. This is where application entries differ from package entries, where any vulnerable
-  match wins (decision 4).
+  several entries match is judged by the most specific glob, the one with more literal
+  characters, so `17.3.*` decides 17.3.x before `*` does. Two entries for the same application
+  that are equally specific and can both match a version make the pack invalid: `checker packs
+  check` refuses it. This is where application entries differ from package entries, where any
+  vulnerable match wins (decision 4).
 - **`affected_from`** is the lowest affected version. Below it, the install is "not affected".
 - **Older checkers refuse a pack with `applications`,** as checker 0.1.1 refused `native`. So the
   REDCap pack goes out only after a checker release that reads it (step A.4).
@@ -131,8 +133,9 @@ judge", never "fixed".
    **DECIDED 2026-11-26 (John):** build only the folder-name form now, and decide on others when
    a threat needs one.
 4. **Which entry decides.** The most specific glob, so a release line's own fix decides before the
-   catch-all entry. **Recommended: yes.** The alternative, any vulnerable match wins, would call
-   17.3.10 LTS vulnerable because it's below 17.4.4.
+   catch-all entry. **DECIDED 2026-11-26 (John): yes,** for application entries only; package
+   entries keep "any vulnerable match wins". The alternative would call 17.3.10 LTS vulnerable
+   because it's below 17.4.4.
 5. **Lines with no fix.** Versions from 13.3.0 on a line with no fix of its own (16.1 to 17.2)
    count as vulnerable, with a reason saying to move to a fixed LTS or Standard release.
    **Recommended: yes,** as the CVE record lists only three fixed versions.

@@ -54,6 +54,7 @@ class Install:
     folders: list[str] = field(default_factory=list)  # every version seen, oldest first
     evidence: str | None = None  # a file in the newest version folder (web_files item)
     fixed_since: str | None = None  # when the first fixed version folder arrived, at the latest
+    walk_cut: bool = False  # can't judge only because its web root's walk was cut short
 
 
 @dataclass
@@ -174,6 +175,7 @@ def judge_installs(apps: list[Application], web: WebEvidence) -> tuple[list[Inst
         if not _walked(web, place, folder):
             root = f"the walk of {place}" if place else "the walk of its web root"
             install.why = f"{root} was cut short before its version folders were all seen"
+            install.walk_cut = True
         elif unread:
             install.why = f"a version folder whose name isn't a version: {prefix}{unread[0][:60]}"
         else:
@@ -195,7 +197,8 @@ def judge_installs(apps: list[Application], web: WebEvidence) -> tuple[list[Inst
                 install.fixed_since = arrived.isoformat() if arrived else None
         installs.append(install)
     folders = sorted({a.folder for a in apps})
-    return installs, _maybe_missing(web, folders)
+    cut = any(i.walk_cut for i in installs)  # its own root's walk, whatever the others did
+    return installs, cut or _maybe_missing(web, folders)
 
 
 def _walked(web: WebEvidence, place: str | None, folder: str) -> bool:

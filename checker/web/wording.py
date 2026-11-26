@@ -642,6 +642,10 @@ THREAT_GROUPS = {
     "old_code": ("high", "Fix installed, but old code may still be running"),
     "partial": ("unknown", "Can't tell: the check saw only part of the software list"),
     "partial_web": ("unknown", "Can't tell: the check saw only part of the web folders"),
+    "partial_both": (
+        "unknown",
+        "Can't tell: the check saw only part of the software list and of the web folders",
+    ),
     "unreadable": ("critical", "Its result can't be read"),
     "not_covered": ("unknown", "This threat update doesn't cover this kind of server"),
     "not_yet": ("unknown", "Not checked for this threat yet"),
@@ -677,7 +681,10 @@ def _stands(host: FleetHost, pack, applies: dict) -> str:
     if status == "can't judge":
         if known == "can't judge":
             return "cant_judge"
-        return "partial_web" if record.get("partial") == "web_roots" else "partial"
+        partial = record.get("partial")
+        if partial == "web_roots_and_packages":
+            return "partial_both"
+        return "partial_web" if partial == "web_roots" else "partial"
     if known == "can't judge":
         return "cant_judge"
     if status in ("not covered", "unknown release"):
@@ -702,8 +709,13 @@ def threat_details(stored: dict) -> dict:
         by_group: dict[str, list[str]] = {}
         installs: dict[str, list[str]] = {}
         for host in stored["hosts"]:
-            by_group.setdefault(_stands(host, pack, stored["applies"]), []).append(host.host)
-            if lines := install_lines(host.pack_records.get(pack.id)):
+            standing = _stands(host, pack, stored["applies"])
+            by_group.setdefault(standing, []).append(host.host)
+            # Only from this pack version's own record: a server not checked
+            # with it, kept off it or removed has no installs to show for it.
+            if standing not in _NO_RECORD and (
+                lines := install_lines(host.pack_records.get(pack.id))
+            ):
                 installs[host.host] = lines
         groups = [
             {
@@ -736,32 +748,34 @@ def threat_details(stored: dict) -> dict:
     }
 
 
+_NO_RECORD = ("removed", "kept_off", "not_yet", "unreadable")
+# The standing first, so a long path (a folder name anyone with the web
+# account can choose) can't push it out of sight.
 INSTALL_WORDS = {
-    "vulnerable": "open to this threat",
-    "can't judge": "the check can't tell",
-    "fixed": "has the fix",
-    "not affected": "not affected",
+    "vulnerable": "Open to this threat",
+    "can't judge": "The check can't tell",
+    "fixed": "Its newest version has the fix",
+    "not affected": "Not affected",
 }
 
 
 def install_lines(record: object) -> list[str]:
     """Each install of a pack's application on one server (plan A.3), as a
-    line: "REDCap 17.3.9 in /var/www/html/redcap: open to this threat"."""
+    line: "Open to this threat: REDCap 17.3.9 in /var/www/html/redcap"."""
     if not isinstance(record, dict):
         return []
     lines = []
     for install in _list_of_dicts(record.get("applications"))[:20]:
-        words = INSTALL_WORDS.get(install.get("status"))
+        status = install.get("status")
+        words = INSTALL_WORDS.get(status) if isinstance(status, str) else None
         name, path = install.get("name"), install.get("path")
         if not (words and isinstance(name, str) and isinstance(path, str)):
             continue
         version = install.get("version")
-        version = (
-            f" {version}"
-            if isinstance(version, str) and install.get("status") != "can't judge"
-            else ""
-        )
-        lines.append(f"{name}{version} in {path}: {words}")
+        shown = isinstance(version, str) and status != "can't judge"
+        version = f" {version[:40]}" if shown else ""
+        path = path if len(path) <= 200 else path[:199] + "…"
+        lines.append(f"{words}: {name[:60]}{version} in {path}")
     return lines
 
 

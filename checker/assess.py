@@ -384,8 +384,10 @@ def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
     def judged(e) -> bool:
         if e.status != CANT_JUDGE or e.removed_at:
             return True
-        found = list(e.packages) + list(getattr(e, "applications", []))
-        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in found)
+        # An install that can't be judged only because its web root's walk was
+        # cut short is a gap, as a package listing collected in part is.
+        apps = [a for a in getattr(e, "applications", []) if not getattr(a, "walk_cut", False)]
+        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in [*e.packages, *apps])
 
     return [
         {
@@ -413,9 +415,12 @@ def _application_fields(e: Any) -> dict[str, Any]:
     applications, worst first."""
     fields: dict[str, Any] = {}
     if getattr(e, "applications_partial", False):
-        fields["partial"] = "web_roots"
+        both = getattr(e, "packages_partial", False)
+        fields["partial"] = "web_roots_and_packages" if both else "web_roots"
     if installs := _worst_first(e):
         fields["applications"] = [_install_record(a) for a in installs][:MAX_INSTALLS]
+        if len(installs) > MAX_INSTALLS:
+            fields["applications_more"] = len(installs) - MAX_INSTALLS
     return fields
 
 
@@ -430,14 +435,15 @@ def _worst_first(exposure: Any) -> list[Any]:
 
 
 def _install_record(install: Any) -> dict[str, Any]:
+    # Paths, versions and reasons come from the server's folder names: bounded.
     return {
         "name": install.name,
-        "path": install.path,
-        "version": install.version,
+        "path": install.path[:500],
+        "version": install.version[:100],
         "status": install.status,
         "fixed": install.fixed,
         "why": install.why[:300],
-        "versions_seen": install.folders[:20],
+        "versions_seen": [v[:100] for v in install.folders[:20]],
         "fixed_since": install.fixed_since,
     }
 

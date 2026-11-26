@@ -444,7 +444,7 @@ TITLE_FIRST = (
         "An application's version can't be judged against a threat pack",
         (
             "A web application on this server may have a known flaw that attackers are using, but the check can't tell which version it runs.",
-            "Ask whoever runs the application which version is in use. If the check saw only part of the web folders, run a fresh check.",
+            "Ask whoever runs the application which version is in use. If the check saw only part of the web folders, a folder there holds a great many files, such as uploads: moving uploads out of the web folder lets the check see the rest.",
         ),
     ),
 )

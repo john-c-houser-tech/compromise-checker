@@ -1,6 +1,6 @@
 # A deploy day on a clean server (2026-11-26)
 
-Draft 1; decision 1 settled by John on 2026-11-26. From the outside technical evaluation of 0.1.6 (risk 3: "calibration on a thin corpus").
+Draft 1; decisions 1 and 2 settled by John on 2026-11-26. From the outside technical evaluation of 0.1.6 (risk 3: "calibration on a thin corpus").
 
 ## The problem
 
@@ -155,7 +155,7 @@ numbers are in, not before:
    was planned, is what a break-in looks like, and a tool that reads it as Low would miss the real
    one. The alternative is to require Elevated or lower, which would mean weakening the chain or
    the sudo rule finding.
-2. **How much notice is reasonable?** Recommended: one window and at most five narrow rules (see
+2. **How much notice is reasonable?** DECIDED (John, 2026-11-26), as recommended: one window and at most five narrow rules (see
    "What counts as passing"). If DD.2 needs more, that is a finding about the tool, to fix in DD.4,
    and a reason not to raise the limit.
 3. **A second deploy shape.** Recommended: not now. A container deploy (Docker, new images, a

@@ -1381,6 +1381,11 @@ class SnapshotBuilder:
                     [str(p) for p in first.get("patterns") or []][:20]
                     if isinstance(first, dict) else []
                 ),
+                "levels_whole": (
+                    first.get("levels_whole")
+                    if isinstance(first, dict) and type(first.get("levels_whole")) is int
+                    else None
+                ),
             }  # fmt: skip
         elif name == "phase_time_limit" and data.get("phase") == "web_roots":
             self.live["web_time_limit"] = True
@@ -1390,7 +1395,9 @@ class SnapshotBuilder:
             and place not in walks
         ):
             # A web root refused, unreadable or never reached: not walked.
-            walks[place] = {"whole": False, "first_whole": False, "first_patterns": []}
+            walks[place] = {
+                "whole": False, "first_whole": False, "first_patterns": [], "levels_whole": None,
+            }  # fmt: skip
 
     def _on_unusual_files(self, name: str, data: dict[str, Any]) -> None:
         if name == "site_php":

@@ -59,7 +59,10 @@ class WalkFirstTests(FixtureRoot):
         self.assertFalse(summary["whole"])
         self.assertEqual(summary["truncated_reason"], "entries")
         self.assertEqual(len(self.version_files(sent)), 6)
-        self.assertEqual(summary["first"], {"patterns": ["redcap_v*"], "found": 2, "whole": True})
+        self.assertEqual(
+            {k: summary["first"][k] for k in ("patterns", "found", "whole")},
+            {"patterns": ["redcap_v*"], "found": 2, "whole": True},
+        )
 
     def test_a_walk_cut_short_inside_the_version_folders_says_so(self):
         self.site()
@@ -95,6 +98,30 @@ class WalkFirstTests(FixtureRoot):
         self.addCleanup(locked.chmod, 0o755)
         summary, sent = self.run_walk(first=["redcap_v*"])
         self.assertFalse(summary["first"]["whole"])
+
+    def test_a_second_install_is_found_before_the_uploads_use_up_the_walk(self):
+        self.site()
+        for n in range(2):
+            self.write(f"var/www/html/redcap-uat/redcap_v17.3.9/Classes/F{n}.php", b"<?php")
+        _, plain = self.run_walk(limit=80)
+        self.assertFalse(any("/redcap-uat/" in p for p in plain))  # missed by a plain walk
+        summary, sent = self.run_walk(first=["redcap_v*"], limit=30)
+        self.assertFalse(summary["whole"])
+        self.assertEqual(sum("/redcap-uat/redcap_v" in p for p in sent), 2)
+        self.assertEqual(len(self.version_files(sent)), 8)
+        self.assertTrue(summary["first"]["whole"])
+        self.assertGreaterEqual(summary["first"]["levels_whole"], 3)  # every install near the top
+
+    def test_levels_whole_counts_an_unreadable_folder_near_the_top(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads any folder")
+        self.site(uploads=0)
+        locked = Path(self.root, "var/www/html/other")
+        locked.mkdir(parents=True)
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        summary, _ = self.run_walk(first=["redcap_v*"])
+        self.assertEqual(summary["first"]["levels_whole"], 1)  # html/other (level 2) unlisted
 
     def test_web_root_walks_say_their_phase(self):
         self.site(uploads=0)

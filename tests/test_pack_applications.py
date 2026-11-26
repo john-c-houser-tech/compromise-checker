@@ -79,8 +79,9 @@ def tree(*versions, site=SITE, ctime="2026-09-01T00:00:00+00:00", place=ROOT, fi
 
 
 def web(files, whole=True, first_whole=None, complete=True, earlier=(), walks=True,
-        patterns=("redcap_v*",), extra=None):  # fmt: skip
-    found = {ROOT: {"whole": whole, "first_whole": first_whole, "first_patterns": list(patterns)}}
+        patterns=("redcap_v*",), extra=None, levels=None):  # fmt: skip
+    found = {ROOT: {"whole": whole, "first_whole": first_whole, "first_patterns": list(patterns),
+                    "levels_whole": levels}}  # fmt: skip
     found |= extra or {}
     return WebEvidence(
         files=files,
@@ -292,6 +293,15 @@ def test_a_cut_short_walk_with_every_version_folder_walked_first_judges_the_inst
     assert found.applications_partial and found.status == CANT_JUDGE and found.share == 1.0
 
 
+def test_a_cut_short_walk_that_listed_every_folder_near_the_top_trusts_the_installs():
+    # Decision 8: every install down to INSTALL_DEPTH was found, so none is missing there.
+    found = judged(tree("17.3.10"), whole=False, first_whole=True, levels=3)
+    assert not found.applications_partial and found.status == FIXED
+    assert found.applications_shallow == [ROOT]
+    shallower = judged(tree("17.3.10"), whole=False, first_whole=True, levels=2)
+    assert shallower.applications_partial and shallower.status == CANT_JUDGE
+
+
 def test_a_cut_short_walk_still_says_a_vulnerable_install_is_vulnerable():
     found = judged(tree("17.3.9"), whole=False, first_whole=True)
     assert found.status == VULNERABLE
@@ -358,7 +368,7 @@ def test_a_pack_with_packages_and_applications_takes_the_worse():
 # --- Through an analysis ---------------------------------------------------------------------
 
 
-def redcap_records(version, whole=True):
+def redcap_records(version, whole=True, levels=None):
     web_files = [
         rec(
             "unusual_files",
@@ -382,7 +392,8 @@ def redcap_records(version, whole=True):
         "unusual_files", "walk_summary", top=ROOT, place=ROOT, resolved=ROOT, entries=10,
         errors=0, not_descended={"depth": 0, "other_filesystem": 0, "pruned": 0},
         truncated=not whole, truncated_reason=None if whole else "entries", sent=len(web_files),
-        not_listed=0, whole=whole, first={"patterns": ["redcap_v*"], "found": 1, "whole": True},
+        not_listed=0, whole=whole,
+        first={"patterns": ["redcap_v*"], "found": 1, "whole": True, "levels_whole": levels},
         phase="web_roots",
     )  # fmt: skip
     # The privileged search's later walk of the same folder isn't the web roots' own.
@@ -419,6 +430,18 @@ def test_an_analysis_of_a_cut_short_walk_says_an_install_may_be_missing(home):
     assert record["status"] == CANT_JUDGE
 
 
+def test_an_analysis_of_a_cut_short_walk_that_found_every_install_near_the_top(home):
+    from checker.assess import analyze
+
+    base, store, identity, config = home
+    add_bundle(home, "b1", 0, redcap_records("17.4.4", whole=False, levels=3))
+    assessment = analyze(store, "web01", identity, config.recipients, packs=[PACK])
+    (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
+    assert record["status"] == FIXED
+    assert any("every folder down to 3 levels below it was listed" in g
+               for g in assessment["coverage"]["gaps"])  # fmt: skip
+
+
 def test_the_snapshot_keeps_only_the_web_roots_own_walks():
     from checker.snapshot import SnapshotBuilder
 
@@ -428,7 +451,10 @@ def test_the_snapshot_keeps_only_the_web_roots_own_walks():
             snap._web_walk(r["name"], r["data"])
     snap._web_walk("not_examined", {"path": "/srv/www", "reason": "nfs"})  # not a web root here
     walks = snap.live["web_walks"]
-    assert walks == {ROOT: {"whole": False, "first_whole": True, "first_patterns": ["redcap_v*"]}}
+    assert walks == {ROOT: {"whole": False, "first_whole": True, "first_patterns": ["redcap_v*"],
+                            "levels_whole": None}}  # fmt: skip
     snap.live["web_roots"].append("/srv/www")
     snap._web_walk("not_examined", {"path": "/srv/www", "reason": "nfs"})
-    assert walks["/srv/www"] == {"whole": False, "first_whole": False, "first_patterns": []}
+    assert walks["/srv/www"] == {
+        "whole": False, "first_whole": False, "first_patterns": [], "levels_whole": None,
+    }  # fmt: skip

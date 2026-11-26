@@ -85,6 +85,9 @@ class Exposure:
     applications_partial: bool = False
     # True when the package listing was collected only in part
     packages_partial: bool = False
+    # Web roots cut short where every install near the top was still found
+    # (decision 8): an install deeper than INSTALL_DEPTH wouldn't be
+    applications_shallow: list[str] = field(default_factory=list)
     # What dated the fix: "packages" (an install or update) or "applications"
     # (a version folder's files, plan A.2)
     fix_source: str = "packages"
@@ -300,7 +303,7 @@ _ORDER = (VULNERABLE, CANT_JUDGE, FIXED, NOT_AFFECTED)
 def _judge_applications(found: Exposure, pack: Pack, web: Any, now: datetime) -> None:
     """Adds the pack's applications to `found` (checker.packs.applications):
     the worse status of packages and installs, and the longer exposure."""
-    from checker.packs.applications import judge_installs
+    from checker.packs.applications import judge_installs, shallow_roots
 
     now = now if now.tzinfo else now.replace(tzinfo=UTC)
     window = pack.exposure
@@ -308,6 +311,8 @@ def _judge_applications(found: Exposure, pack: Pack, web: Any, now: datetime) ->
     end = min(window.window_end, now) if window.window_end else now
     installs, partial = judge_installs(list(window.applications), web)
     found.applications, found.applications_partial = installs, partial
+    folders = sorted({a.folder for a in window.applications})
+    found.applications_shallow = [] if partial else shallow_roots(web, folders)
     statuses = {i.status for i in installs}
     if VULNERABLE in statuses:
         status = VULNERABLE

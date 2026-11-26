@@ -1,7 +1,7 @@
 # Judging exposure by an application's version, for REDCap (2026-11-26)
 
-Draft 1. All seven decisions settled 2026-11-26. Steps A.2 onward follow, one pull request each,
-each for John to merge.
+Draft 1. All eight decisions settled 2026-11-26. Steps A.2 onward follow, one pull request each,
+each for John to merge. One question is open, for John to test (below the decisions).
 
 ## The problem
 
@@ -119,6 +119,11 @@ judge", never "fixed".
 - **Remediation:** upgrade to 16.0.49 LTS, 17.3.10 LTS or 17.4.4 Standard. Where the install was
   exposed, treat whatever the web account could read as disclosed: REDCap's database password and
   salt in `database.php`, and the project data.
+- **Remove old version folders** (John, 2026-11-26): REDCap's upgrade leaves every earlier
+  `redcap_vX.Y.Z` folder in place, and sites often keep them. The remediation says to remove old
+  version folders as soon as the new release has been tested, whatever the open question below
+  finds. Test and UAT installs on the same server are judged like any other: one reachable from
+  the internet is as exploitable as production.
 
 ### Confirmed fixed versions (2026-11-26)
 
@@ -196,6 +201,23 @@ A fake REDCap tree on the laptop (tmpfs, warm cache), collected by the collector
    settings, and the collector walks the matching folders in each web root first. With no such
    pack, the walk is as today. The coverage note also suggests moving `edocs/` out of the web
    root, which keeps uploads out of reach of the web server anyway.
+8. **Finding every install** (from the A.2 review). Test and UAT installs often share a server
+   with production, so a second install in the part of a cut-short walk that wasn't reached is
+   a real case. **DECIDED 2026-11-26 (John):** with a pack's version folder patterns in force,
+   the walk visits the matching folders first and then the rest of the web root level by level,
+   and its summary says how far down every folder was listed (`levels_whole`). A web root cut
+   short where the version folders were walked whole and every folder down to 3 levels below it
+   was listed (`/var/www/html/redcap-uat/redcap_v…` is at the third) may hide no install near the
+   top, so the installs found decide the host. A coverage note says an install deeper than that
+   wouldn't be seen. Without such a pack the walk is as before.
+
+## Open question (for John to test)
+
+**Do old version folders still run?** If a page under an old `redcap_vX.Y.Z` folder runs when
+requested directly, rather than being sent to the current version, the old vulnerable code stays
+reachable after an upgrade. Then an install is fixed only once every vulnerable version folder is
+gone, and the checker judges every folder, not only the newest (decision 2 changes). John tests
+this on a non-production install.
 
 ## Steps (one pull request each, after the decisions)
 

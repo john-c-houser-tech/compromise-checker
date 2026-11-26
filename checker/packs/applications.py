@@ -36,6 +36,10 @@ from checker.packs.format import Application, dotted, specificity
 VULNERABLE, FIXED, CANT_JUDGE = "vulnerable", "fixed", "can't judge"
 NOT_AFFECTED = "not affected"
 _DIGITS = tuple("0123456789")
+# How deep below a web root an install is looked for when its walk was cut
+# short (decision 8): /var/www/html/redcap-uat has its version folders at
+# the third level. Deeper installs are said not to be seen.
+INSTALL_DEPTH = 3
 
 
 @dataclass
@@ -190,7 +194,8 @@ def judge_installs(apps: list[Application], web: WebEvidence) -> tuple[list[Inst
                                    web.earlier)  # fmt: skip
                 install.fixed_since = arrived.isoformat() if arrived else None
         installs.append(install)
-    return installs, _maybe_missing(web)
+    folders = sorted({a.folder for a in apps})
+    return installs, _maybe_missing(web, folders)
 
 
 def _walked(web: WebEvidence, place: str | None, folder: str) -> bool:
@@ -207,10 +212,39 @@ def _walked(web: WebEvidence, place: str | None, folder: str) -> bool:
     return bool(walk.get("whole") or first)
 
 
-def _maybe_missing(web: WebEvidence) -> bool:
-    """Whether an install may be in what wasn't walked."""
+def _maybe_missing(web: WebEvidence, folders: list[str]) -> bool:
+    """Whether an install may be in what wasn't walked: a web root cut
+    short, unless the pack's version folders were walked first and whole,
+    and every folder down to INSTALL_DEPTH below it was listed (decision 8),
+    so any install near the top was found."""
     if web.walks is None:
         return not web.complete
     if web.time_limit:
         return True
-    return any(not w.get("whole") for r, w in web.walks.items() if r in (web.roots or []))
+    return any(
+        not w.get("whole") and not _found_all(w, folders)
+        for r, w in web.walks.items()
+        if r in (web.roots or [])
+    )
+
+
+def _found_all(walk: dict[str, Any], folders: list[str]) -> bool:
+    sent = walk.get("first_patterns") or []
+    levels = walk.get("levels_whole")
+    return (
+        bool(walk.get("first_whole"))
+        and all(f in sent for f in folders)
+        and isinstance(levels, int)
+        and levels >= INSTALL_DEPTH
+    )
+
+
+def shallow_roots(web: WebEvidence, folders: list[str]) -> list[str]:
+    """Web roots cut short where installs were still all found near the
+    top (for the coverage note: a deeper install wouldn't be)."""
+    if web.walks is None:
+        return []
+    return sorted(
+        r for r, w in web.walks.items()
+        if r in (web.roots or []) and not w.get("whole") and _found_all(w, folders)
+    )  # fmt: skip

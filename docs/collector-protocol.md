@@ -89,7 +89,11 @@ stores it with the evidence; the manifest carries the version string only.
   one, and everything under them, before the rest, so a walk cut short by
   its entry limit still has them; its `walk_summary` then carries `first`
   (`patterns`, `found`, and `whole`: every matching folder found was walked
-  whole, with no errors and nothing left undescended inside them). The web
+  whole, with no errors and nothing left undescended inside them; and
+  `levels_whole`: the depth down to which every folder was listed, the top
+  being 0). With patterns, the rest of the web root is walked level by
+  level after the matching folders, so every folder near the top is listed
+  before the walk goes deep into any one. The web
   roots' walk summaries carry `phase: "web_roots"`, and the `web_roots`
   record says `walks: "tagged"`, so the controller doesn't take a later walk
   of the same folder (the privileged search) for theirs. The controller sends the version folder patterns of the packs in

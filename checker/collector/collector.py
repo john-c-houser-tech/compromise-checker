@@ -1100,6 +1100,13 @@ class Walk:
         # walk cut short by its entry limit still has the ones it found.
         self.first = tuple(first)
         self._first_pending = []
+        # With `first`, the rest is walked level by level (plan A.2, decision 8),
+        # so every install near the top of a web root is found before the walk
+        # goes deep into any one folder; `levels_whole` says how far down every
+        # folder was listed.
+        self._pending = None
+        self._open_depth = None  # the level-by-level folder being listed, if any
+        self._hole = None  # the shallowest folder (by depth) left unlisted
         self._in_first = False
         self._first_found = 0
         self._first_undescended = 0
@@ -1136,7 +1143,25 @@ class Walk:
             "found": self._first_found,
             "whole": not self._first_pending and not stopped_inside
             and not self._first_undescended,
+            "levels_whole": self._levels_whole(),
         }  # fmt: skip
+
+    def _levels_whole(self):
+        """The depth down to which every folder was listed (the top is 0):
+        what is in a folder at that depth or above is all known."""
+        found = []
+        if self.truncated_reason is not None:
+            if self._open_depth is not None:
+                found.append(self._open_depth - 1)
+            elif self._pending:
+                found.append(self._pending[0][1] - 1)
+        if self._hole is not None:
+            found.append(self._hole - 1)
+        return max(-1, min(found)) if found else self.max_depth
+
+    def _unlisted(self, depth):
+        if self.first and not self._in_first:
+            self._hole = depth if self._hole is None else min(self._hole, depth)
 
     def _entry(self, absolute, info, link_target=None):
         entry = {
@@ -1226,20 +1251,31 @@ class Walk:
         # a symbolic link meanwhile, the path leads somewhere else, and the
         # walk records that instead of following it.
         pending = [(self.top, 0, (top_info.st_dev, top_info.st_ino))]
+        if self.first:
+            pending = collections.deque(pending)  # level by level (decision 8)
+        self._pending = pending
         first = self._first_pending
         while first or pending:
             if self._stop():
                 return
             self._in_first = bool(first)
-            directory, depth, identity = (first or pending).pop()
+            if first:
+                directory, depth, identity = first.pop()
+            elif self.first:
+                directory, depth, identity = pending.popleft()
+                self._open_depth = depth
+            else:
+                directory, depth, identity = pending.pop()
             try:
                 fd = _open_directory(directory)
             except OSError as exc:
+                self._unlisted(depth)
                 yield self._counted({"path": directory, "error": str(exc)})
                 continue
             try:
                 opened = os.fstat(fd)
                 if (opened.st_dev, opened.st_ino) != identity:
+                    self._unlisted(depth)
                     yield self._counted({"path": directory, "error": "replaced during the walk"})
                     continue
                 with os.scandir(fd) as listing:
@@ -1251,6 +1287,7 @@ class Walk:
                         if risk:  # e.g. an NFS mount inside the directory
                             if self.first and self._first_name(item.name):
                                 self._first_undescended += 1
+                            self._unlisted(depth + 1)
                             yield self._counted({"path": absolute, "not_examined": risk})
                             continue
                         try:
@@ -1261,6 +1298,7 @@ class Walk:
                         except OSError as exc:
                             if self.first and self._first_name(item.name):
                                 self._first_undescended += 1
+                            self._unlisted(depth + 1)
                             yield self._counted({"path": absolute, "error": str(exc)})
                             continue
                         entry = self._entry(absolute, info, link_target)
@@ -1284,12 +1322,16 @@ class Walk:
                                 into.append((absolute, depth + 1, (info.st_dev, info.st_ino)))
                             if matched and "not_descended" in entry:
                                 self._first_undescended += 1
+                            elif "not_descended" in entry:
+                                self._unlisted(depth + 1)
                         yield self._counted(entry)
             except OSError as exc:  # the listing failed part-way
+                self._unlisted(depth)
                 yield self._counted({"path": directory, "error": str(exc)})
             finally:
                 os.close(fd)
             self._in_first = False  # this folder's listing is done
+            self._open_depth = None
 
 
 # --- Running allow-listed commands -------------------------------------------------

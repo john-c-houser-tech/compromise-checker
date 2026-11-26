@@ -435,6 +435,41 @@ def test_an_analysis_reports_a_vulnerable_install(home):
     assert f"REDCap 17.3.9 at {SITE}: before the fix 17.3.10" in finding["summary"]
     assert any("running version is read from the newest version folder" in g
                for g in assessment["coverage"]["gaps"])  # fmt: skip
+    (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
+    (install,) = record["applications"]
+    assert install == {
+        "name": "REDCap", "path": SITE, "version": "17.3.9", "status": VULNERABLE,
+        "fixed": "17.3.10", "why": "before the fix 17.3.10", "versions_seen": ["17.3.9"],
+        "fixed_since": None,
+    }  # fmt: skip
+    assert "partial" not in record and record["judged"] is True
+
+
+def _record_for(found):
+    from checker.assess import exposure_records
+
+    (record,) = exposure_records([found])
+    return record
+
+
+def test_a_record_for_an_install_cut_off_by_its_walk_is_a_gap_not_a_judgement():
+    # The pack's pattern wasn't sent (added after the collection): the install can't be judged.
+    found = judged(tree("17.3.10"), whole=False, first_whole=True, patterns=["other_v*"])
+    record = _record_for(found)
+    assert record["status"] == CANT_JUDGE and record["judged"] is False
+    assert record["partial"] == "web_roots"
+
+
+def test_a_record_lists_installs_worst_first_with_the_fix_time_and_caps():
+    files = tree(("17.3.10", "2026-10-05T00:00:00+00:00")) | tree("17.3.9", site="/var/www/b")
+    record = _record_for(judged(files))
+    assert [a["path"] for a in record["applications"]] == ["/var/www/b", SITE]
+    assert record["applications"][1]["fixed_since"] == "2026-10-05T00:00:00+00:00"
+    many = {}
+    for n in range(25):
+        many |= tree("17.3.10", site=f"/var/www/s{n:02d}")
+    record = _record_for(judged(many))
+    assert len(record["applications"]) == 20 and record["applications_more"] == 5
 
 
 def test_an_analysis_of_a_cut_short_walk_says_an_install_may_be_missing(home):
@@ -447,7 +482,21 @@ def test_an_analysis_of_a_cut_short_walk_says_an_install_may_be_missing(home):
     assert finding["variant"] == "cant_judge" and "may be missing" in finding["summary"]
     assert not any("package listing" in g for g in assessment["coverage"]["gaps"])
     (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
-    assert record["status"] == CANT_JUDGE
+    assert record["status"] == CANT_JUDGE and record["partial"] == "web_roots"
+    assert record["judged"] is False  # the install is fixed: the gap is the walk
+
+
+def test_an_analysis_with_no_install_and_a_cut_short_walk_is_a_gap(home):
+    from checker.assess import analyze
+
+    base, store, identity, config = home
+    records = [r for r in redcap_records("17.4.4", whole=False)
+               if r.get("name") != "web_file"]  # fmt: skip
+    add_bundle(home, "b1", 0, records)
+    assessment = analyze(store, "web01", identity, config.recipients, packs=[PACK])
+    (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
+    assert record["status"] == CANT_JUDGE and record["judged"] is False
+    assert record["partial"] == "web_roots" and "applications" not in record
 
 
 def test_an_analysis_of_a_cut_short_walk_that_found_every_install_near_the_top(home):
@@ -457,7 +506,7 @@ def test_an_analysis_of_a_cut_short_walk_that_found_every_install_near_the_top(h
     add_bundle(home, "b1", 0, redcap_records("17.4.4", whole=False, levels=3))
     assessment = analyze(store, "web01", identity, config.recipients, packs=[PACK])
     (record,) = [e for e in assessment["exposures"] if e["pack"] == "redcap-2026-09"]
-    assert record["status"] == FIXED
+    assert record["status"] == FIXED and "partial" not in record
     assert any("every folder down to 3 levels below it was listed" in g
                for g in assessment["coverage"]["gaps"])  # fmt: skip
 

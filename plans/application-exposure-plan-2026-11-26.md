@@ -128,8 +128,8 @@ judge", never "fixed".
    collected access logs, where REDCap's URLs carry `redcap_vX.Y.Z`.
 3. **Only version-in-a-folder-name, for now.** Other web applications keep their version in a
    file's contents (WordPress in `wp-includes/version.php`), which the collector doesn't send.
-   **Recommended:** build only the folder-name form now, and decide on others when a threat
-   needs one.
+   **DECIDED 2026-11-26 (John):** build only the folder-name form now, and decide on others when
+   a threat needs one.
 4. **Which entry decides.** The most specific glob, so a release line's own fix decides before the
    catch-all entry. **Recommended: yes.** The alternative, any vulnerable match wins, would call
    17.3.10 LTS vulnerable because it's below 17.4.4.

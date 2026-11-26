@@ -137,8 +137,9 @@ judge", never "fixed".
    entries keep "any vulnerable match wins". The alternative would call 17.3.10 LTS vulnerable
    because it's below 17.4.4.
 5. **Lines with no fix.** Versions from 13.3.0 on a line with no fix of its own (16.1 to 17.2)
-   count as vulnerable, with a reason saying to move to a fixed LTS or Standard release.
-   **Recommended: yes,** as the CVE record lists only three fixed versions.
+   count as vulnerable, with a reason saying to move to a fixed LTS or Standard release ("no fix
+   on the 17.1 line; upgrade to 17.3.10 LTS or 17.4.4 Standard"). **DECIDED 2026-11-26 (John):
+   yes,** as the CVE record lists only three fixed versions.
 6. **Where the fixed versions come from.** REDCap's release notes need a community login, so the
    pack cites the CVE record, which Securifera (the CNA) wrote. The packs README says each
    version is checked against the vendor's own page, so the pack should say why it can't be here.

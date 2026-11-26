@@ -143,9 +143,9 @@ judge", never "fixed".
 6. **Where the fixed versions come from.** REDCap's release notes need a community login, so the
    pack cites the CVE record, which Securifera (the CNA) wrote. The packs README says each
    version is checked against the vendor's own page, so the pack should say why it can't be here.
-   **DECIDED 2026-11-26 (John):** a REDCap administrator (John) checks the fixed versions against
-   REDCap's own release notes before signing, so the pack cites those notes (login required) as
-   well as the CVE record and Unit 42.
+   **DECIDED 2026-11-26 (John):** the fixed versions are checked against REDCap's own release
+   notes before signing, so the pack cites those notes (login required) as well as the CVE record
+   and Unit 42.
 
 ## Steps (one pull request each, after the decisions)
 

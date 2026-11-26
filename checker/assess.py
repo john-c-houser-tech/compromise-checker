@@ -241,11 +241,12 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     history_complete = whole is not None and whole.complete
     php = context.snapshot.sections.get("php_settings")
     php_complete = php is not None and php.complete
+    web = _web_evidence(context) if any(p.exposure.applications for p in context.packs) else None
     context.exposures = []
     for pack in context.packs:
         found = judge(
             pack, context.items("host"), context.items("packages"), processes, now, complete,
-            history, earlier, history_complete,
+            history, earlier, history_complete, web,
         )  # fmt: skip
         if found.status not in (NOT_AFFECTED, NOT_COVERED, UNKNOWN_RELEASE):
             found.mitigations = judge_mitigations(
@@ -261,6 +262,31 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
         if e.share > 0
     ]  # fmt: skip
     return raised, raised_by
+
+
+def _web_evidence(context: Context) -> Any:
+    """What the collection says about the web roots, for packs that judge
+    applications by their version folders (plan A.2)."""
+    from checker.packs.applications import WebEvidence
+
+    section = context.snapshot.sections.get("web_files")
+    live = context.snapshot.live
+    earlier = []
+    for when, snap in (
+        (context.previous_time, context.previous_snapshot),
+        (context.baseline_time, context.baseline_snapshot),
+    ):
+        collected = parse_time(when) if when else None
+        if collected is not None and snap is not None and "web_files" in snap.sections:
+            earlier.append((collected, snap.sections["web_files"].items))
+    return WebEvidence(
+        files=section.items if section is not None else {},
+        complete=section is not None and section.complete,
+        walks=live.get("web_walks"),
+        roots=live.get("web_roots"),
+        time_limit=bool(live.get("web_time_limit")),
+        earlier=earlier,
+    )
 
 
 def official_results(
@@ -358,7 +384,8 @@ def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
     def judged(e) -> bool:
         if e.status != CANT_JUDGE or e.removed_at:
             return True
-        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in e.packages)
+        found = list(e.packages) + list(getattr(e, "applications", []))
+        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in found)
 
     return [
         {

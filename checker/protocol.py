@@ -36,6 +36,9 @@ HomeText = Literal["off", "privileged", "all"]
 ExecRecords = Literal["web", "privileged", "all"]
 MAX_WEB_ROOTS = 64
 MAX_WEB_USERS = 64
+MAX_WEB_FIRST = 20
+# A pack's version folder pattern (checker.packs.format.Application.folder).
+WEB_FIRST = r"^[A-Za-z0-9._-]{1,62}\*$"
 ACCOUNT_NAME = r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$"
 
 
@@ -93,6 +96,12 @@ class Settings(_Model):
     # Web-server accounts beyond www-data, apache, nginx and the like.
     web_users: list[Annotated[str, Field(pattern=ACCOUNT_NAME)]] = Field(
         default=[], max_length=MAX_WEB_USERS
+    )
+    # Folders the web roots' walk visits first (plan A.2, decision 7): the
+    # version folder patterns of the packs in force, so a walk cut short by
+    # its entry limit still has every version folder it found.
+    web_first: list[Annotated[str, Field(pattern=WEB_FIRST)]] = Field(
+        default=[], max_length=MAX_WEB_FIRST
     )
 
     @field_validator("web_roots")

@@ -77,6 +77,20 @@ async def _uninterrupted(work: Callable):
             cancelled = True
 
 
+def _web_first(home: Path, config: Config) -> list[str]:
+    """The version folder patterns of the packs in force (plan A.2): the
+    collector walks those folders first. None readable, none sent: the walk
+    is then as it always was."""
+    from checker.packs.applications import patterns
+    from checker.packs.store import in_force_read_only
+
+    try:
+        packs, _ = in_force_read_only(home, config.packs.trusted_keys)
+    except Exception:  # noqa: BLE001 - the collection doesn't depend on packs
+        return []
+    return patterns(packs)
+
+
 async def collect_hosts(
     home: Path,
     config: Config,
@@ -101,6 +115,7 @@ async def collect_hosts(
         web_access_logs=config.web_access_logs,
         exec_records=config.exec_records,
         web_users=config.web_users,
+        web_first=_web_first(home, config),
     )
     key = mail_key(home)
     fingerprint = collector_sha256()

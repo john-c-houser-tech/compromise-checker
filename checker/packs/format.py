@@ -285,6 +285,117 @@ class Package(_Strict):
         return self
 
 
+_APP_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
+# A version folder's name: a fixed prefix, then the version (plan A.2,
+# decision 3): "redcap_v*" finds redcap_v17.3.10.
+_FOLDER = re.compile(r"[A-Za-z0-9._-]{1,62}\*")
+# ASCII digits, no leading zeros: a folder named redcap_v017.3.10 isn't a version.
+_DOTTED = re.compile(r"(?:0|[1-9][0-9]{0,5})(?:\.(?:0|[1-9][0-9]{0,5})){0,5}")
+_DOTTED_GLOB = re.compile(r"[0-9.*?]{1,40}")
+
+
+def dotted(value: str) -> tuple[int, ...] | None:
+    """A dotted version as numbers (17.3.10 above 17.3.9), padded with zeros
+    so 13.3 and 13.3.0 compare equal, or None."""
+    if not _DOTTED.fullmatch(value):
+        return None
+    parts = [int(p) for p in value.split(".")]
+    return tuple(parts + [0] * (6 - len(parts)))
+
+
+def specificity(glob: str) -> int:
+    """How much of a version a `versions` glob pins: its literal characters."""
+    return sum(c not in "*?" for c in glob)
+
+
+def globs_overlap(a: str, b: str) -> bool:
+    """Whether some text matches both fnmatch globs (*, ? and literals)."""
+    seen: dict[tuple[int, int], bool] = {}
+
+    def both(i: int, j: int) -> bool:
+        if (i, j) in seen:
+            return seen[i, j]
+        seen[i, j] = False
+        if i == len(a) and j == len(b):
+            result = True
+        elif i < len(a) and a[i] == "*" and both(i + 1, j):
+            result = True
+        elif j < len(b) and b[j] == "*" and both(i, j + 1):
+            result = True
+        elif i < len(a) and j < len(b):
+            x, y = a[i], b[j]
+            if x == "*":
+                result = both(i, j + 1)
+            elif y == "*":
+                result = both(i + 1, j)
+            else:
+                result = (x == "?" or y == "?" or x == y) and both(i + 1, j + 1)
+        else:
+            result = False
+        seen[i, j] = result
+        return result
+
+    return both(0, 0)
+
+
+class Application(_Strict):
+    """An application found by a version folder in a web root (plan A.2):
+    the folder `folder` names (a prefix, then the version), the release line
+    `versions` picks, the lowest affected version, and the first fixed on
+    that line (`fixed: null`: no fix yet). Versions compare as dotted
+    numbers. Where several entries match, the most specific glob decides."""
+
+    name: str  # as admins know it: "REDCap"
+    folder: str  # "redcap_v*"
+    versions: str = "*"  # the release line: "17.3.*"
+    affected_from: str | None = None  # below it, not affected
+    fixed: str | None
+    source: str
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        if not _APP_NAME.fullmatch(value):
+            raise ValueError(f"not an application name (letters, digits, space . _ -): {value!r}")
+        return value
+
+    @field_validator("folder")
+    @classmethod
+    def _folder(cls, value: str) -> str:
+        if not _FOLDER.fullmatch(value):
+            raise ValueError(
+                f"a version folder is a fixed prefix and then *, the version: {value!r}"
+                " (e.g. redcap_v*)"
+            )
+        return value
+
+    @field_validator("versions")
+    @classmethod
+    def _versions(cls, value: str) -> str:
+        if not _DOTTED_GLOB.fullmatch(value) or value.count("*") > 3:
+            raise ValueError(f"not a version pattern (digits, dots, * and ?): {value!r}")
+        return value
+
+    @field_validator("affected_from", "fixed")
+    @classmethod
+    def _dotted(cls, value: str | None) -> str | None:
+        if value is not None and dotted(value) is None:
+            raise ValueError(f"not a dotted version (17.3.10): {value!r}")
+        return value
+
+    @field_validator("source")
+    @classmethod
+    def _source(cls, value: str) -> str:
+        return _https(value)
+
+    @model_validator(mode="after")
+    def _order(self) -> Application:
+        low, fix = self.affected_from, self.fixed
+        if low and fix and dotted(fix) < dotted(low):  # type: ignore[operator]
+            raise ValueError(f"fixed {fix} is below affected_from {low}")
+        return self
+
+
 class StaleCode(_Strict):
     """Services that keep running vulnerable code after the fix is
     installed, until restarted: matched by process name."""
@@ -307,7 +418,11 @@ class Exposure(_Strict):
     # How much likelier compromise is for a host exposed through the whole
     # window; a host exposed for part of it gets that share (decision D3).
     likelihood_ratio: float = Field(gt=1, le=MAX_LR)
-    packages: list[Package] = Field(min_length=1, max_length=100)
+    packages: list[Package] = Field(default=[], max_length=100)
+    # Applications judged by a version folder in the web roots (plan A.2);
+    # a pack needs packages, applications or both. Checker 0.1.6 and earlier
+    # refuse a pack with them.
+    applications: list[Application] = Field(default=[], max_length=50)
     # A package an entry names, in a version no entry's pattern matches: not
     # affected (the pattern is the affected stream), or can't judge (every
     # build is affected, and one from an unlisted repository isn't safe).
@@ -345,6 +460,33 @@ class Exposure(_Strict):
                     " pattern: give each its own pattern"
                 )
             names |= set(package.binary_names)
+        if not self.packages and not self.applications:
+            raise ValueError("an exposure needs packages, applications or both")
+        apps = self.applications
+        named: dict[str, str] = {}
+        for app in apps:
+            if named.setdefault(app.folder, app.name) != app.name:
+                raise ValueError(
+                    f"the folder {app.folder!r} is under two names ({named[app.folder]!r} and"
+                    f" {app.name!r}): give every entry for one application the same name"
+                )
+        for one in named:
+            for other in named:
+                if one != other and one[:-1].startswith(other[:-1]):
+                    raise ValueError(
+                        f"the folders {other!r} and {one!r} overlap: one prefix starts the other"
+                    )
+        for n, one in enumerate(apps):
+            for other in apps[n + 1 :]:
+                if (one.name, one.folder) != (other.name, other.folder):
+                    continue
+                if specificity(one.versions) == specificity(other.versions) and globs_overlap(
+                    one.versions, other.versions
+                ):
+                    raise ValueError(
+                        f"{one.name}: the versions {one.versions!r} and {other.versions!r} are"
+                        " equally specific and can both match a version: make one more specific"
+                    )
         return self
 
 

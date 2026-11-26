@@ -2761,8 +2761,12 @@ def cmd_packs_check(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    releases = ", ".join(dict.fromkeys(p.release for p in pack.exposure.packages))
-    print(f"Valid: {pack.id} version {pack.version} ({visible(pack.title, 200)}), for {releases}.")
+    covers = list(dict.fromkeys(p.release for p in pack.exposure.packages))
+    covers += list(dict.fromkeys(a.name for a in pack.exposure.applications))
+    print(
+        f"Valid: {pack.id} version {pack.version} ({visible(pack.title, 200)}),"
+        f" for {', '.join(covers)}."
+    )
     print("Checked only: nothing was trusted or added (adding a pack checks its signature).")
     return 0
 
@@ -2876,6 +2880,12 @@ def cmd_packs_show(args: argparse.Namespace) -> int:
         native = " (native: versions have no revision)" if entry.native else ""
         print(
             f"  {entry.release}: {', '.join(entry.binary_names)}{which}{native}: fixed in {fixed}"
+        )
+    for app in exposure.applications:
+        low = f", from {app.affected_from}" if app.affected_from else ""
+        print(
+            f"  {app.name} ({app.folder} folders; versions {app.versions}{low}):"
+            f" fixed in {app.fixed or 'no fix yet'}"
         )
     for mitigation in pack.mitigations:
         expect = visible(mitigation.expect, 100)

@@ -79,6 +79,18 @@ class Exposure:
     removed_at: str | None = None  # a vulnerable package removed in the window, when
     stale: list[dict[str, Any]] = field(default_factory=list)  # processes still on old code
     mitigations: list[Any] = field(default_factory=list)  # checker.packs.mitigation.Judged
+    # Installs of the pack's applications (checker.packs.applications.Install)
+    applications: list[Any] = field(default_factory=list)
+    # True when an install may be missing (a web root's walk was cut short)
+    applications_partial: bool = False
+    # True when the package listing was collected only in part
+    packages_partial: bool = False
+    # Web roots cut short where every install near the top was still found
+    # (decision 8): an install deeper than INSTALL_DEPTH wouldn't be
+    applications_shallow: list[str] = field(default_factory=list)
+    # What dated the fix: "packages" (an install or update) or "applications"
+    # (a version folder's files, plan A.2)
+    fix_source: str = "packages"
 
     def log_ratio(self) -> float:
         """What this exposure adds to the prior's log-odds (decision D3)."""
@@ -136,6 +148,40 @@ def _vendor_mark(fixed: str) -> re.Pattern | None:
 
 
 def judge(
+    pack: Pack,
+    host: dict[str, Any],
+    packages: dict[str, dict[str, Any]],
+    processes: list[dict[str, Any]],
+    now: datetime,
+    complete: bool = True,
+    history: list[dict[str, Any]] | None = None,
+    earlier: list[tuple[datetime, dict[str, dict[str, Any]]]] | None = None,
+    history_complete: bool = False,
+    web: Any = None,
+) -> Exposure:
+    """The exposure of one host to one pack: its packages (_judge_packages)
+    and, for a pack with applications, their installs in the web roots
+    (`web`, a checker.packs.applications.WebEvidence; plan A.2). The host
+    is exposed through either: the worse status, and the longer exposure."""
+    if not pack.exposure.applications:
+        return _judge_packages(
+            pack, host, packages, processes, now, complete, history, earlier, history_complete
+        )
+    from checker.packs.applications import WebEvidence
+
+    found = _judge_packages(
+        pack, host, packages, processes, now, complete, history, earlier, history_complete
+    )
+    uncovered = found.status if found.status in (NOT_COVERED, UNKNOWN_RELEASE) else None
+    if not pack.exposure.packages or uncovered:
+        found.status = NOT_AFFECTED  # the applications don't depend on the release
+    _judge_applications(found, pack, web or WebEvidence({}, False), now)
+    if uncovered and pack.exposure.packages and found.status == NOT_AFFECTED:
+        found.status = uncovered  # nothing found: the release gap still stands
+    return found
+
+
+def _judge_packages(
     pack: Pack,
     host: dict[str, Any],
     packages: dict[str, dict[str, Any]],
@@ -212,6 +258,7 @@ def judge(
     elif CANT_JUDGE in statuses or not complete:
         # A listing collected only in part could hide a vulnerable package.
         found.status = CANT_JUDGE
+        found.packages_partial = not complete
     elif FIXED in statuses:
         found.status = FIXED
     else:
@@ -248,6 +295,57 @@ def judge(
         found.exposed_from, found.exposed_until = start.isoformat(), until.isoformat()
         found.share = min(1.0, (until - start).total_seconds() / span)
     return found
+
+
+_ORDER = (VULNERABLE, CANT_JUDGE, FIXED, NOT_AFFECTED)
+
+
+def _judge_applications(found: Exposure, pack: Pack, web: Any, now: datetime) -> None:
+    """Adds the pack's applications to `found` (checker.packs.applications):
+    the worse status of packages and installs, and the longer exposure."""
+    from checker.packs.applications import judge_installs, shallow_roots
+
+    now = now if now.tzinfo else now.replace(tzinfo=UTC)
+    window = pack.exposure
+    start = window.window_start
+    end = min(window.window_end, now) if window.window_end else now
+    installs, partial = judge_installs(list(window.applications), web)
+    found.applications, found.applications_partial = installs, partial
+    folders = sorted({a.folder for a in window.applications})
+    found.applications_shallow = [] if partial else shallow_roots(web, folders)
+    statuses = {i.status for i in installs}
+    if VULNERABLE in statuses:
+        status = VULNERABLE
+    elif CANT_JUDGE in statuses or partial:
+        status = CANT_JUDGE  # never decided from a partial list
+    elif FIXED in statuses:
+        status = FIXED
+    else:
+        return  # no install: the packages decide
+    if _ORDER.index(status) < _ORDER.index(found.status):
+        found.status = status
+    if end <= start:
+        return
+    span = (end - start).total_seconds()
+    fixed = [i for i in installs if i.status == FIXED]
+    times = [_time(i.fixed_since) for i in fixed]
+    fixed_at = None
+    if status != FIXED or None in times:
+        share, until = 1.0, None  # exposed through the window so far
+    else:
+        fixed_at = max(times)  # type: ignore[type-var]
+        if fixed_at <= start:
+            return  # fixed before the window opened
+        until = min(fixed_at, end)
+        share = min(1.0, (until - start).total_seconds() / span)
+    if share > found.share or (share == found.share and until is None):
+        found.share = share
+        found.exposed_from = start.isoformat()
+        found.exposed_until = until.isoformat() if until else None
+        found.fix_source = "applications"
+        if fixed_at is not None:
+            found.fixed_at, found.fix_time_exact = fixed_at.isoformat(), False
+            found.removed_at = None
 
 
 def _state(name: str, version: str | None, entries: list, manager: str, other_builds: str) -> str:

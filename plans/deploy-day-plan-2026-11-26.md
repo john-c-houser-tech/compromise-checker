@@ -1,6 +1,6 @@
 # A deploy day on a clean server (2026-11-26)
 
-Draft 1; decisions 1 and 2 settled by John on 2026-11-26. From the outside technical evaluation of 0.1.6 (risk 3: "calibration on a thin corpus").
+Draft 1; all three decisions settled by John on 2026-11-26. From the outside technical evaluation of 0.1.6 (risk 3: "calibration on a thin corpus").
 
 ## The problem
 
@@ -158,6 +158,6 @@ numbers are in, not before:
 2. **How much notice is reasonable?** DECIDED (John, 2026-11-26), as recommended: one window and at most five narrow rules (see
    "What counts as passing"). If DD.2 needs more, that is a finding about the tool, to fix in DD.4,
    and a reason not to raise the limit.
-3. **A second deploy shape.** Recommended: not now. A container deploy (Docker, new images, a
+3. **A second deploy shape.** DECIDED (John, 2026-11-26), as recommended: not now. A container deploy (Docker, new images, a
    published port) is the other common shape, and `container.new` already treats a new tag as a
    deploy. Add it after DD.5 if the first shape turns up problems.

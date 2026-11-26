@@ -1,6 +1,6 @@
 # A deploy day on a clean server (2026-11-26)
 
-Draft 1. From the outside technical evaluation of 0.1.6 (risk 3: "calibration on a thin corpus").
+Draft 1; decision 1 settled by John on 2026-11-26. From the outside technical evaluation of 0.1.6 (risk 3: "calibration on a thin corpus").
 
 ## The problem
 
@@ -88,7 +88,9 @@ With a 2% prior, two highs, four mediums and the chain go past 99%: Critical, wi
 
 ## What counts as passing
 
-- **Without notice:** see decision 1.
+- **Without notice:** any score, High and Critical included, as long as the report's top
+  contributors are the deploy's own steps, so a person can tell within a minute that it was the
+  deploy (decision 1).
 - **With notice:** Low, using one maintenance window and at most five whitelist rules. Each rule
   names its subject (an account, a path, a port, a repository file), and none uses a glob wider than
   one directory. The rules are kept as `tests/integration/deploy-whitelist.yaml`, so they also serve
@@ -147,7 +149,7 @@ numbers are in, not before:
 
 ## Decisions
 
-1. **What may a deploy without notice score?** Recommended: anything, High and Critical included,
+1. **What may a deploy without notice score?** DECIDED (John, 2026-11-26), as recommended: anything, High and Critical included,
    as long as the report's top contributors are the deploy's own steps, so a person can tell within
    a minute that it was the deploy. A new user given sudo who then logs in, with nobody saying it
    was planned, is what a break-in looks like, and a tool that reads it as Low would miss the real

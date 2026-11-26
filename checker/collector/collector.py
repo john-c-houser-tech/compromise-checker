@@ -1091,9 +1091,18 @@ class Walk:
         hash_bytes=1 << 20,
         hash_files="executable",
         prune=None,
+        first=(),
     ):
         self.run = run
         self.top = top
+        # Folder name patterns walked before anything else, with everything
+        # under them (plan A.2, decision 7): a pack's version folders, so a
+        # walk cut short by its entry limit still has the ones it found.
+        self.first = tuple(first)
+        self._first_pending = []
+        self._in_first = False
+        self._first_found = 0
+        self._first_undescended = 0
         self.max_depth = max_depth
         self.max_entries = max_entries
         self.hash_bytes = hash_bytes
@@ -1105,7 +1114,7 @@ class Walk:
         self.truncated_reason = None
 
     def summary(self):
-        return {
+        summary = {
             "top": self.top,
             "entries": self.entries,
             "errors": self.errors,
@@ -1113,6 +1122,21 @@ class Walk:
             "truncated": self.truncated_reason is not None,
             "truncated_reason": self.truncated_reason,
         }
+        if self.first:
+            summary["first"] = self._first_summary()
+        return summary
+
+    def _first_summary(self):
+        """Whether every folder the `first` patterns matched was walked
+        whole: none left waiting, none being listed when the walk stopped,
+        none left undescended."""
+        stopped_inside = self.truncated_reason is not None and self._in_first
+        return {
+            "patterns": list(self.first),
+            "found": self._first_found,
+            "whole": not self._first_pending and not stopped_inside
+            and not self._first_undescended,
+        }  # fmt: skip
 
     def _entry(self, absolute, info, link_target=None):
         entry = {
@@ -1197,10 +1221,12 @@ class Walk:
         # a symbolic link meanwhile, the path leads somewhere else, and the
         # walk records that instead of following it.
         pending = [(self.top, 0, (top_info.st_dev, top_info.st_ino))]
-        while pending:
+        first = self._first_pending
+        while first or pending:
             if self._stop():
                 return
-            directory, depth, identity = pending.pop()
+            self._in_first = bool(first)
+            directory, depth, identity = (first or pending).pop()
             try:
                 fd = _open_directory(directory)
             except OSError as exc:
@@ -1230,6 +1256,11 @@ class Walk:
                             continue
                         entry = self._entry(absolute, info, link_target)
                         if stat.S_ISDIR(info.st_mode):
+                            matched = self._in_first or any(
+                                fnmatch.fnmatchcase(item.name, p) for p in self.first
+                            )
+                            if matched and not self._in_first:
+                                self._first_found += 1
                             if info.st_dev != device:
                                 entry["not_descended"] = "other_filesystem"
                                 self.not_descended["other_filesystem"] += 1
@@ -1240,7 +1271,10 @@ class Walk:
                                 entry["not_descended"] = self.prune(absolute)
                                 self.not_descended["pruned"] += 1
                             else:
-                                pending.append((absolute, depth + 1, (info.st_dev, info.st_ino)))
+                                into = first if matched else pending
+                                into.append((absolute, depth + 1, (info.st_dev, info.st_ino)))
+                            if matched and "not_descended" in entry:
+                                self._first_undescended += 1
                         yield self._counted(entry)
             except OSError as exc:  # the listing failed part-way
                 yield self._counted({"path": directory, "error": str(exc)})
@@ -2549,6 +2583,8 @@ def sudo_logs_input(line):
 # Local, fully qualified (scanner@corp.example.com) and domain (CORP\scanner)
 # account names; never one sudo could take for an option.
 _SUDO_ACCOUNT = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.@\\$-]{0,255}$")
+# A pack's version folder pattern, walked first in web roots (plan A.2).
+WEB_FIRST = re.compile(r"^[A-Za-z0-9._-]{1,62}\*$")
 _SUDO_LIST_OPTION = re.compile(r"[\s,:]")
 # sudo settings that make a look-up leave more traces (mail the
 # administrators, send the event to a log server): no look-up then.
@@ -5788,8 +5824,9 @@ def mask_names(entry):
 
 
 def walk_place(
-    run, module, top, limit, keep, hash_it, record="unusual_file", prune=None, missed=None
-):
+    run, module, top, limit, keep, hash_it, record="unusual_file", prune=None, missed=None,
+    first=(),
+):  # fmt: skip
     """Walk one place; send each entry `keep(entry)` accepts as `record`,
     annotated (hashed where `hash_it(entry, kind)` says), and count the
     rest. Returns the walk's summary, or None if the place isn't there, or
@@ -5811,7 +5848,8 @@ def walk_place(
         return None
     if not stat.S_ISDIR(info.st_mode):
         return None
-    walk = Walk(run, directory, max_depth=32, max_entries=limit, hash_files=None, prune=prune)
+    walk = Walk(run, directory, max_depth=32, max_entries=limit, hash_files=None, prune=prune,
+                first=first)  # fmt: skip
     sent = counted = 0
     for entry in walk:
         if "error" in entry:
@@ -6058,7 +6096,8 @@ def module_unusual_files(run):
                     return _is_web_listed(entry, root)
 
                 summary = walk_place(run, module, top, MAX_WEB_ENTRIES, web_listed, _web_hashed,
-                                     "web_file", missed=missed)  # fmt: skip
+                                     "web_file", missed=missed,
+                                     first=run.settings.get("web_first") or ())  # fmt: skip
                 note(summary)
                 done += 1
                 if summary is not None:
@@ -9410,6 +9449,13 @@ def settings_problems(settings):
         and all(isinstance(u, str) and _SUDO_ACCOUNT.match(u) for u in web_users)
     ):
         problems.append("web_users must be a list of at most 64 account names")
+    web_first = settings.get("web_first", [])
+    if not (
+        isinstance(web_first, list)
+        and len(web_first) <= 20
+        and all(isinstance(p, str) and WEB_FIRST.match(p) for p in web_first)
+    ):
+        problems.append("web_first must be a list of at most 20 folder patterns (prefix*)")
     withheld = settings.get("mail_key_withheld")
     if withheld is not None and not (isinstance(withheld, str) and len(withheld) <= 300):
         problems.append("mail_key_withheld must be null or text of at most 300 characters")

@@ -1361,6 +1361,18 @@ class SnapshotBuilder:
     def _on_unusual_files(self, name: str, data: dict[str, Any]) -> None:
         if name == "site_php":
             self._site_php_read = True
+        # What the web roots' walks covered, for applications a pack judges by
+        # their version folders (checker.packs.applications; plan A.2).
+        if name == "web_roots" and isinstance(data.get("roots"), list):
+            self.live["web_roots"] = [str(r) for r in data["roots"]][:64]
+        elif name == "walk_summary" and data.get("place"):
+            first = data.get("first")
+            self.live.setdefault("walks", {})[str(data["place"])] = {
+                "whole": data.get("whole") is True,
+                "first_whole": first.get("whole") is True if isinstance(first, dict) else None,
+            }
+        elif name == "phase_time_limit" and data.get("phase") == "web_roots":
+            self.live["web_time_limit"] = True
         sections = {
             "unusual_file": "unusual_files",
             "web_file": "web_files",

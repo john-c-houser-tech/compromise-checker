@@ -84,6 +84,14 @@ stores it with the evidence; the manifest carries the version string only.
   --exec-records`).
 - `web_users` — optional: up to 64 more web-server account names
   (`web_users` in the configuration).
+- `web_first` — optional: up to 20 folder name patterns, each a fixed prefix
+  and then `*` (`redcap_v*`). The web roots' walk visits folders matching
+  one, and everything under them, before the rest, so a walk cut short by
+  its entry limit still has them; its `walk_summary` then carries `first`
+  (`patterns`, `found`, and `whole`: every matching folder found was walked
+  whole). The controller sends the version folder patterns of the packs in
+  force (packs with `applications`); omitted or empty, the walk is as
+  before. Anything else is refused.
 - `mail_key_withheld` — optional: why the controller sent no mail key to
   this host (at most 300 characters); the collector records it with
   `mail_logs_withheld`.

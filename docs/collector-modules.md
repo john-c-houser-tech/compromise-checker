@@ -613,10 +613,12 @@ use up another's time; one that runs out of its share stops there
 - `/tmp`, `/var/tmp` and `/dev/shm`: every entry is sent (`unusual_file`);
 - `/dev`: only what doesn't belong — regular files, and hidden directories,
   links, device nodes, pipes or sockets (a copy of `/dev/mem` named `.m`);
-- web roots: the host's own list (`checker hosts add --web-root`), or by
-  default `/var/www`, `/srv/www`, `/srv/http` and `/usr/share/nginx/html`
-  (Phase 1 decision 3; a `web_roots` record says which). Only files a web
-  server could run — a script extension anywhere in the name, since Apache
+- web roots, with the folders `web_first` names (the packs' version
+  folders) walked first (collector-protocol.md): the host's own list
+  (`checker hosts add --web-root`), or by default `/var/www`, `/srv/www`,
+  `/srv/http` and `/usr/share/nginx/html` (Phase 1 decision 3; a
+  `web_roots` record says which). Only files a web server could run — a
+  script extension anywhere in the name, since Apache
   runs `shell.php.jpg` when a handler maps `.php` (`.php`, `.phtml`,
   `.phar`, `.shtml`, `.cfm`, `.jsp`, `.asp(x)`, `.cgi`, `.pl`, `.py`, `.sh`
   and the like) — executables, set-user-ID or capability files, devices,

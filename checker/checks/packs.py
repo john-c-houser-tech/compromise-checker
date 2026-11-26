@@ -78,7 +78,11 @@ def exposure(context: Context) -> list[Finding]:
                         variant="cant_judge",
                     )
                 )
-        if item.status == CANT_JUDGE and not any(p.status == CANT_JUDGE for p in item.packages):
+        found += _applications(item, named, pack, context)
+        explained = any(p.status == CANT_JUDGE for p in item.packages) or (
+            item.applications_partial or any(a.status == CANT_JUDGE for a in item.applications)
+        )
+        if item.status == CANT_JUDGE and not explained:
             context.gaps.append(
                 f"pack {named}: the package listing wasn't collected whole, so a vulnerable"
                 " package may be missing from it; counted as exposed"
@@ -148,6 +152,69 @@ def _mitigations(item, named: str, pack: str, context: Context) -> list[Finding]
     return found
 
 
+def _applications(item, named: str, pack: str, context: Context) -> list[Finding]:
+    """Installs of a pack's applications (plan A.2): vulnerable or not
+    judged, and what the collection can't show."""
+    found = []
+    for name in dict.fromkeys(a.name for a in item.applications):
+        context.gaps.append(
+            f"pack {named}: {name}'s running version is read from the newest version folder on"
+            " disk; an upgrade unpacked but not finished reads as the new version"
+        )
+    for install in item.applications:
+        entities = [f"application:{install.name}", pack]
+        evidence = [{"item": ["web_files", install.evidence]}] if install.evidence else []
+        if install.status == VULNERABLE:
+            found.append(
+                Finding(
+                    "pack.exposure",
+                    "An application is vulnerable to a threat a pack describes",
+                    EXPOSURE,
+                    "high",
+                    f"{install.name} {install.version} at {install.path}: {install.why} ({named})",
+                    entities,
+                    evidence,
+                    variant="vulnerable",
+                )
+            )
+        elif install.status == CANT_JUDGE:
+            found.append(
+                Finding(
+                    "pack.exposure",
+                    "An application's version can't be judged against a threat pack",
+                    EXPOSURE,
+                    "medium",
+                    f"{install.name} at {install.path}: {install.why} ({named}); counted as"
+                    " exposed",
+                    entities,
+                    evidence,
+                    variant="cant_judge",
+                )
+            )
+    if item.applications_partial and item.status == CANT_JUDGE:
+        apps = [a for p in context.packs if p.id == item.pack_id for a in p.exposure.applications]
+        names = ", ".join(dict.fromkeys(a.name for a in apps)) or "its applications"
+        context.gaps.append(
+            f"pack {named}: a web root's walk was cut short, so an install of {names} may be"
+            " missing from it; counted as exposed"
+        )
+        if not any(a.status == CANT_JUDGE for a in item.applications):
+            found.append(
+                Finding(
+                    "pack.exposure",
+                    "An application's version can't be judged against a threat pack",
+                    EXPOSURE,
+                    "medium",
+                    f"a web root's walk was cut short, so an install of {names} may be missing"
+                    f" ({named}): counted as exposed",
+                    [pack],
+                    [],
+                    variant="cant_judge",
+                )
+            )
+    return found
+
+
 def _was_exposed(item, named: str, pack: str, collected_at: str | None) -> Finding:
     if item.exposed_until is None:
         why = (
@@ -179,13 +246,22 @@ def _was_exposed(item, named: str, pack: str, collected_at: str | None) -> Findi
         )
     else:
         closed = bool(item.window_end and item.fixed_at and item.fixed_at > item.window_end)
-        ending = (
-            f"until the window closed at {item.exposed_until[:16]} (the fix was installed after"
-            " it, at the latest at its last install or update)"
-            if closed
-            else f"until the fix was installed, by {item.exposed_until[:16]} at the latest (its"
-            " last install or update; it may have come earlier)"
-        )
+        if item.fix_source == "applications":
+            ending = (
+                f"until the window closed at {item.exposed_until[:16]} (the fixed version's"
+                " folder was written after it)"
+                if closed
+                else f"until the fixed version's folder was written, by"
+                f" {item.exposed_until[:16]} at the latest (it may have come earlier)"
+            )
+        else:
+            ending = (
+                f"until the window closed at {item.exposed_until[:16]} (the fix was installed"
+                " after it, at the latest at its last install or update)"
+                if closed
+                else f"until the fix was installed, by {item.exposed_until[:16]} at the latest"
+                " (its last install or update; it may have come earlier)"
+            )
         summary = (
             f"exposed from {item.exposed_from[:16]} {ending}: at most"
             f" {_days(item.exposed_from, item.exposed_until, collected_at)},"
@@ -198,7 +274,8 @@ def _was_exposed(item, named: str, pack: str, collected_at: str | None) -> Findi
         "low",
         summary,
         [pack],
-        [{"item": ["packages", p.key]} for p in item.packages],
+        [{"item": ["packages", p.key]} for p in item.packages]
+        + [{"item": ["web_files", a.evidence]} for a in item.applications if a.evidence],
         variant="was_exposed",
     )
 

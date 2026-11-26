@@ -123,8 +123,8 @@ judge", never "fixed".
 1. **The format change.** An optional `applications` list beside `packages`, keeping `format: 1`,
    as `native` did. **DECIDED 2026-11-26 (John): yes.** It needs a checker release before the pack
    can go out.
-2. **The running version.** The newest version folder in each install. **Recommended: yes,** with
-   the coverage note about unfinished upgrades. A later refinement could read the version from
+2. **The running version.** The newest version folder in each install. **DECIDED 2026-11-26
+   (John): yes,** with the coverage note about unfinished upgrades. A later refinement could read the version from
    collected access logs, where REDCap's URLs carry `redcap_vX.Y.Z`.
 3. **Only version-in-a-folder-name, for now.** Other web applications keep their version in a
    file's contents (WordPress in `wp-includes/version.php`), which the collector doesn't send.

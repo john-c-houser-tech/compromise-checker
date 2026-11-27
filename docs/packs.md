@@ -106,6 +106,64 @@ scanner's, not this tool's.
   with a version in its name (`php-fpm8.3`) isn't judged by a package naming
   another version.
 
+### Applications in the web roots
+
+Some web applications aren't installed as packages: they are unpacked into a
+web root, with each version's code in a folder of its own. REDCap keeps
+`redcap_v17.3.9/`, `redcap_v17.3.10/` and so on beside its entry points. A pack
+can judge those by `applications`, beside `packages` or instead of them:
+
+```yaml
+exposure:
+  applications:
+    - name: REDCap
+      folder: "redcap_v*"          # a fixed prefix, then the version
+      versions: "17.3.*"           # the release line this entry judges
+      fixed: "17.3.10"
+      source: https://www.cve.org/CVERecord?id=CVE-2026-90817
+    - name: REDCap
+      folder: "redcap_v*"
+      versions: "*"                # every other line
+      affected_from: "13.3.0"      # older versions aren't affected
+      fixed: "17.4.4"
+      source: https://www.cve.org/CVERecord?id=CVE-2026-90817
+```
+
+- **An install** is a folder in a collected web root holding folders that
+  `folder` matches, the prefix followed by a digit. Each install is judged on
+  its own, so a test or UAT install beside production gets its own result.
+- **Its running version is its newest version folder.** Old folders left
+  behind after an upgrade don't change that; an upgrade unpacked but not
+  finished in the browser reads as the new version (a coverage note says so).
+  A folder name that isn't a dotted version (`redcap_v17.3.9-test`) makes the
+  install "can't judge", never fixed.
+- **Versions compare as dotted numbers**, ASCII digits, no leading zeros, and
+  `13.3` equals `13.3.0`.
+- **The most specific entry decides.** Where several `versions` globs match,
+  the one with more literal characters judges the version, so `17.3.*` decides
+  17.3.10 before `*` does. Two entries that are equally specific and can both
+  match a version are refused, as are one folder under two names and two
+  folders where one prefix starts the other. A version on a line with no entry
+  of its own falls to the broadest entry: below that entry's fix it reads
+  vulnerable (naming every fix, when it's on another line), and at or above it
+  fixed, as 17.5 and 18.0 do in the example.
+- **The fix arrived** when the first fixed version above every vulnerable one
+  was written (its files' earliest ctime), or when the previous or the baseline
+  collection listed it, whichever is earlier. It is only ever "at the latest".
+- **The walk.** The checker sends the packs' `folder` patterns to the
+  collector, which walks matching folders first and then the rest of each web
+  root level by level. A web root cut short by its entry limit (a busy upload
+  folder) still has its version folders. The installs found there decide when
+  the pack's version folders were walked first and whole (with no error inside
+  them) and every folder down to 3 levels below the root was listed, however
+  the rest of the root was cut short or failed; a coverage note then says a
+  deeper install wouldn't be seen. Otherwise, and always when the web roots ran
+  out of time, the host reads "can't judge" unless an install found is
+  vulnerable. A pack added after a collection wasn't walked first in it, so
+  its installs on a cut-short root read "can't judge" until the next one.
+- **Checker 0.1.6 and earlier refuse a pack with `applications`**, as 0.1.1 did
+  `native`: one goes out only after a checker release that reads it.
+
 ### Detections
 
 Each detection counts only for a host the threat reached: `counts:
@@ -160,7 +218,10 @@ source could withhold that list, and the staleness warning wouldn't show it.
 
 ## Limits
 
-- A pack judges only the packages it lists. Software bundling its own PHP, or a
-  hosting panel's own packages, reads as not affected unless the pack names them.
+- A pack judges only the packages and applications it lists. Software bundling
+  its own PHP, or a hosting panel's own packages, reads as not affected unless
+  the pack names them. An application is seen only in the collected web roots,
+  and only by its version folders' names: an intruder with the web account
+  can make a newer-looking folder, which then reads as the running version.
 - A clean result isn't proof: attackers can avoid or remove evidence, and an
   old program start can only be seen where the audit log recorded it.

@@ -222,7 +222,12 @@ def _exposed(context: Context) -> list[tuple[Pack, Any, datetime]]:
         start = parse_time(exposure.exposed_from)
         if pack is None or start is None:
             continue
-        if exposure.status == CANT_JUDGE and not exposure.packages and not exposure.removed_at:
+        if (
+            exposure.status == CANT_JUDGE
+            and not exposure.packages
+            and not exposure.applications
+            and not exposure.removed_at
+        ):
             continue
         found.append((pack, exposure, start))
     return found

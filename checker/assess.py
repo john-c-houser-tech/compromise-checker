@@ -241,11 +241,12 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
     history_complete = whole is not None and whole.complete
     php = context.snapshot.sections.get("php_settings")
     php_complete = php is not None and php.complete
+    web = _web_evidence(context) if any(p.exposure.applications for p in context.packs) else None
     context.exposures = []
     for pack in context.packs:
         found = judge(
             pack, context.items("host"), context.items("packages"), processes, now, complete,
-            history, earlier, history_complete,
+            history, earlier, history_complete, web,
         )  # fmt: skip
         if found.status not in (NOT_AFFECTED, NOT_COVERED, UNKNOWN_RELEASE):
             found.mitigations = judge_mitigations(
@@ -261,6 +262,31 @@ def _exposures(context: Context) -> tuple[float, list[dict[str, Any]]]:
         if e.share > 0
     ]  # fmt: skip
     return raised, raised_by
+
+
+def _web_evidence(context: Context) -> Any:
+    """What the collection says about the web roots, for packs that judge
+    applications by their version folders (plan A.2)."""
+    from checker.packs.applications import WebEvidence
+
+    section = context.snapshot.sections.get("web_files")
+    live = context.snapshot.live
+    earlier = []
+    for when, snap in (
+        (context.previous_time, context.previous_snapshot),
+        (context.baseline_time, context.baseline_snapshot),
+    ):
+        collected = parse_time(when) if when else None
+        if collected is not None and snap is not None and "web_files" in snap.sections:
+            earlier.append((collected, snap.sections["web_files"].items))
+    return WebEvidence(
+        files=section.items if section is not None else {},
+        complete=section is not None and section.complete,
+        walks=live.get("web_walks"),
+        roots=live.get("web_roots"),
+        time_limit=bool(live.get("web_time_limit")),
+        earlier=earlier,
+    )
 
 
 def official_results(
@@ -358,7 +384,10 @@ def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
     def judged(e) -> bool:
         if e.status != CANT_JUDGE or e.removed_at:
             return True
-        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in e.packages)
+        # An install that can't be judged only because its web root's walk was
+        # cut short is a gap, as a package listing collected in part is.
+        apps = [a for a in getattr(e, "applications", []) if not getattr(a, "walk_cut", False)]
+        return any(p.status in (CANT_JUDGE, VULNERABLE) for p in [*e.packages, *apps])
 
     return [
         {
@@ -373,8 +402,50 @@ def exposure_records(exposures: list[Any]) -> list[dict[str, Any]]:
             "fix_time_exact": e.fix_time_exact,
             "judged": judged(e),
         }
+        | _application_fields(e)
         for e in exposures
     ]
+
+
+def _application_fields(e: Any) -> dict[str, Any]:
+    """Only where there is something to say, so a packages-only pack's
+    record is as before (plan A.3): `partial: web_roots` when a web root's
+    walk was cut short (a record without it that can't be judged saw only
+    part of the package listing), and each install of the pack's
+    applications, worst first."""
+    fields: dict[str, Any] = {}
+    if getattr(e, "applications_partial", False):
+        both = getattr(e, "packages_partial", False)
+        fields["partial"] = "web_roots_and_packages" if both else "web_roots"
+    if installs := _worst_first(e):
+        fields["applications"] = [_install_record(a) for a in installs][:MAX_INSTALLS]
+        if len(installs) > MAX_INSTALLS:
+            fields["applications_more"] = len(installs) - MAX_INSTALLS
+    return fields
+
+
+MAX_INSTALLS = 20
+_INSTALL_ORDER = ("vulnerable", "can't judge", "fixed", "not affected")
+
+
+def _worst_first(exposure: Any) -> list[Any]:
+    installs = list(getattr(exposure, "applications", []))
+    rank = {s: n for n, s in enumerate(_INSTALL_ORDER)}
+    return sorted(installs, key=lambda a: (rank.get(a.status, 9), a.path))
+
+
+def _install_record(install: Any) -> dict[str, Any]:
+    # Paths, versions and reasons come from the server's folder names: bounded.
+    return {
+        "name": install.name,
+        "path": install.path[:500],
+        "version": install.version[:100],
+        "status": install.status,
+        "fixed": install.fixed,
+        "why": install.why[:300],
+        "versions_seen": [v[:100] for v in install.folders[:20]],
+        "fixed_since": install.fixed_since,
+    }
 
 
 def analyze(

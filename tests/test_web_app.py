@@ -1379,6 +1379,18 @@ def recorded(status, **extra):
         ({"pack_records": recorded("can't judge", share=0)}, "May be open"),
         ({"pack_records": recorded("can't judge", judged=False)}, "only part"),
         (
+            {"pack_records": recorded("can't judge", judged=False, partial="web_roots")},
+            "only part of the web folders",
+        ),
+        (
+            {
+                "pack_records": recorded(
+                    "can't judge", judged=False, partial="web_roots_and_packages"
+                )
+            },
+            "software list and of the web folders",
+        ),
+        (
             {
                 "pack_records": recorded("can't judge", judged=False),
                 "exposed": {"p1": "vulnerable"},
@@ -10213,3 +10225,51 @@ def test_a_long_group_name_wraps_in_the_server_band():
     meta = css.split(".host-title .meta {")[1].split("}")[0]
     assert "overflow-wrap: anywhere" in meta
     assert ".host-title > div { min-width: 0; }" in css
+
+
+def test_the_threats_page_names_each_install_under_its_server():
+    from checker.fleet import FleetHost
+    from checker.web.wording import install_lines, threat_details
+
+    record = {
+        "status": "vulnerable",
+        "share": 1.0,
+        "applications": [
+            {"name": "REDCap", "path": "/var/www/html/redcap-uat", "version": "17.3.9",
+             "status": "vulnerable"},
+            {"name": "REDCap", "path": "/var/www/html/redcap", "version": "17.3.10",
+             "status": "fixed"},
+            {"name": "REDCap", "path": "/var/www/html/x", "version": "17.3.11-test",
+             "status": "can't judge"},
+            {"name": 3, "path": "/odd"},  # odd stored data is left out
+        ],
+    }  # fmt: skip
+    assert install_lines(record) == [
+        "Open to this threat: REDCap 17.3.9 in /var/www/html/redcap-uat",
+        "Its newest version has the fix: REDCap 17.3.10 in /var/www/html/redcap",
+        "The check can't tell: REDCap in /var/www/html/x",
+    ]
+    assert install_lines(None) == [] and install_lines({"applications": "x"}) == []
+    odd = {"applications": [{"name": "R", "path": "/p", "status": ["x"]}]}
+    assert install_lines(odd) == []  # a stored status that isn't text: left out, no error
+    long = {"applications": [{"name": "R", "path": "/" + "a" * 500, "status": "vulnerable"}]}
+    (line,) = install_lines(long)
+    assert line.startswith("Open to this threat: ") and len(line) < 300
+
+    def threat_with(**fields):
+        fields.setdefault("state", "analysed")
+        fields.setdefault("packs_applied", {"p1": 1})
+        host = FleetHost("h", pack_records={"p1": record}, **fields)
+        stored = {"packs": [pack_named(version=1)], "hosts": [host], "applies": {"h": {"p1"}},
+                  "problems": [], "retired": []}  # fmt: skip
+        (threat,) = threat_details(stored)["threats"]
+        (group,) = threat["groups"]
+        return group
+
+    group = threat_with()
+    assert group["installs"]["h"][0] == (
+        "Open to this threat: REDCap 17.3.9 in /var/www/html/redcap-uat"
+    )
+    # Not checked with this pack version yet, or removed: the old record's installs aren't shown.
+    assert threat_with(packs_applied={"p1": 0})["installs"] == {}
+    assert threat_with(removed=True)["installs"] == {}

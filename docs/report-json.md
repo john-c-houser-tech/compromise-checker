@@ -41,7 +41,7 @@ Each host:
 | `score` | `probability`, `band`, `prior`, `contributors` and more: see [scoring](scoring.md). `finding` and `findings` in it are finding `number`s | `contributors[].title` and a chain's `account` can be |
 | `findings[]` | in effect, worst first, as below | partly |
 | `suppressed[]` | hidden by a whitelist, with `suppressed_by` | partly |
-| `exposures[]`, `packs[]` | how it stands towards each threat pack, and which it applied. Its dates can come from the server's package history | dates only |
+| `exposures[]`, `packs[]` | how it stands towards each threat pack, and which it applied. Its dates can come from the server's package history. `partial: web_roots` says an install may be missing, because a web root wasn't walked whole (it is absent when every install near the top was still found; a record with `judged: false` and no `partial` saw only part of the package listing; `web_roots_and_packages` when the package listing was partial too). `applications[]` lists each install of a pack's application, worst first, at most 20 (`applications_more` counts the rest): `name`, `path`, `version` (its newest version folder), `status`, `fixed`, `why`, `versions_seen`, `fixed_since` | dates; the installs' `path`, `version`, `why` and `versions_seen` come from folder names |
 | `coverage` | `gaps` (what couldn't be seen) and `log_reach` | partly |
 | `timeline[]` | `when`, `type`, `text`, `findings`, in order, with threat windows. A row with an empty `when` says how many events aren't shown, and `after` places it | `text`: yes |
 | `advisor` | an AI model's words by role, as `answered` and `came_to_nothing`. Never findings. Its "F-3" numbers mean the analysis it read: check `stale` | shaped by it |

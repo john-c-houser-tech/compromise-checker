@@ -219,6 +219,21 @@ reachable after an upgrade. Then an install is fixed only once every vulnerable 
 gone, and the checker judges every folder, not only the newest (decision 2 changes). John tests
 this on a non-production install.
 
+## A.6 results (2026-11-27)
+
+`tests/integration/redcap_proof.py` on Ubuntu 24.04 and Rocky 9 (nginx, PHP-FPM, a fake REDCap
+tree), with the tool's real limits and the `redcap-2026-09` pack as signed: **PASS on both, 23 of
+23 checks each.**
+
+- Vulnerable at 17.3.9, the `staging-folder` detection on `/var/tmp/.syslog-…`, and fixed once
+  17.3.10 was unpacked beside 17.3.9 (both folders seen, the exposure ended, "was exposed").
+- A `redcap-uat` install on 17.3.9 plus 205,000 uploads: the walk was cut short by its entry
+  limit, not by time; the version folders were walked first and whole and every folder down to
+  level 3 was listed; production read fixed, UAT vulnerable, the host vulnerable. With UAT on
+  17.3.10 too, the host read fixed, no install said to be missing, and the deeper-install note.
+- Collection times: 66 to 94 s normally; 153 to 166 s with the uploads and the page cache
+  dropped, within the overall limit, and the web roots' walk never ran out of time.
+
 ## Steps (one pull request each, after the decisions)
 
 - **A.1 Measure, no product code.** Build a fake REDCap tree (three version folders, each with as
